@@ -1082,7 +1082,23 @@ function createApp(options = {}) {
       // dropped, live ids only (see models.js pickerEntries).
       // Whichever class is live decides what is pinnable — the pooled ids the
       // server advertises, or the `provider:model` ids this machine can relay.
-      models: pickerEntries(commandCtx.modelClass === 'byok' ? byokCache.models : modelCache.models),
+      // The rows the picker/overlay offers. Class-scoped, because each class
+      // owns a different id space: pool-advertised ids on aegis, this machine's
+      // `provider:model` ids on byok, and the /model add catalog on custom.
+      // The custom half is read synchronously from config.json (+ the 0600 key
+      // store for the `configured` flag) because buildState() cannot await, and
+      // it is the reason the picker used to fail on that class: the ternary
+      // here was two-way, so `custom` fell through to the pooled modelCache,
+      // which is never populated on a class that never asks the pool.
+      // `listCustomModels` is the same builder /models and the engine use, so
+      // the rows cannot drift from what the class will actually accept.
+      models: pickerEntries(
+        commandCtx.modelClass === 'byok'
+          ? byokCache.models
+          : commandCtx.modelClass === 'custom'
+            ? customModelsCatalog.listCustomModels(engine.settings)
+            : modelCache.models
+      ),
       commands: visibleCommands(),
       transcript: transcript.slice(),
       sessions: [],

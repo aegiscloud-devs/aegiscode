@@ -65,6 +65,7 @@ const { detectDevCommand, runDevServer } = require('./devrun.js');
 const credentials = require('./credentials.js');
 const cloudsync = require('./cloudsync.js');
 const { maskKey, fmtTokens } = require('./format.js');
+const { pickerEntries } = require('./models.js');
 const { openUrl, URLS } = require('./system.js');
 const { sniffProject, buildAegisMd } = require('./init.js');
 const {
@@ -159,16 +160,29 @@ const done = (c, text) => c.push({ role: 'done', text });
 const shortCwd = () => process.cwd().split('/').filter(Boolean).pop() || '~';
 
 /**
- * Refresh the pinnable-model list on the session context before reading it.
- * `c.loadModels()` (owned by the app/chatflow) fetches from the server and
- * records the result on `c.state().models`; it is best-effort — offline it
- * rejects, and the caller falls through to the honest empty note rather than
- * opening an empty picker.
+ * The pinnable-model list for the class the session is on, fetched fresh.
+ *
+ * `c.loadModels()` on the command context is `() => listModelsFor(cls)` — it
+ * already returns the class-scoped rows (pooled catalog on aegis, the
+ * `provider:model` ids this machine can relay on byok, the /model add catalog
+ * on custom). This helper must RETURN that value.
+ *
+ * It used to `await` it and discard the result, leaving every caller to read
+ * `c.state().models` instead — and that field was a two-way ternary over a
+ * three-class world, so on `custom` it fell through to the pooled catalog,
+ * which is never populated on that class. The picker therefore reported "Could
+ * not read the model catalog" on a class whose models are local and always
+ * readable, while `/models` (which reads listModelsFor directly) listed them
+ * correctly. Best-effort on failure: offline, the caller falls through to the
+ * honest empty note rather than opening an empty picker.
+ * @returns {Promise<Array<{id:string,label:string,note:string}>>}
  */
 async function loadModels(c) {
   try {
-    await c.loadModels();
-  } catch {}
+    return (await c.loadModels()) || [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -330,10 +344,12 @@ async function applyAccountKey(c, raw, { label = 'AEGIS API key' } = {}) {
   const acct = (res.account && (res.account.email || res.account.plan)) || null;
   done(c, `AEGIS key saved to ${res.path}${acct ? ` — signed in as ${acct}` : ' and verified'}`);
   // The catalog is key-gated, so a freshly authenticated session should offer
-  // /model's picker without the user having to know to re-run it.
+  // /model's picker without the user having to know to re-run it. Counted from
+  // the loader's return value (through pickerEntries, the same filter the
+  // picker applies) rather than `c.state().models`, so the number matches what
+  // the picker will actually offer.
   try {
-    await c.loadModels({ force: true });
-    const n = (c.state().models || []).length;
+    const n = pickerEntries(await loadModels(c)).length;
     if (n) note(c, `${n} pinnable model${n === 1 ? '' : 's'} available — /model to pin one`);
   } catch {}
   return res;
@@ -848,32 +864,44 @@ const COMMANDS = [
       // will actually take (app.js's buildState().models is class-scoped too).
       const cls = (c.ctx && c.ctx.modelClass) || 'aegis';
       const byok = cls === 'byok';
+      const custom = cls === 'custom';
       // The sub-command token, lower-cased: `add` / `key` / `remove` are the
       // custom-endpoint catalog's verbs. A model id is never one of these in
       // practice, and `list` already shadows a real id the same way.
       const sub = id.toLowerCase();
       if (!id) {
         note(c, `model: ${c.ctx.model || 'server default'}`);
-        // Populate the picker from the server first — app.js's state().models
-        // is empty until loadModels() has run, so an unguarded read renders an
-        // empty picker whose Enter does nothing.
-        await loadModels(c);
-        const models = c.state().models || [];
+        // Populate the picker for the LIVE class first. The list is the return
+        // value, not `c.state().models`: that field is rebuilt from a cache the
+        // current class may not populate (and the custom class never asks the
+        // pool at all), so reading it rendered an empty picker on a class whose
+        // models are local and always readable.
+        //
+        // `pickerEntries` is the same filter app.js's buildState() applies to
+        // that field, and it has to be applied here for the same reason it is
+        // applied there: the loader returns the catalog — aliases included —
+        // and an alias row is not a pinnable entry, so listing it puts a
+        // duplicate in the picker that pins the id it points at.
+        const models = pickerEntries(await loadModels(c));
         if (!models.length) {
           // Say why, and what unblocks it: an unreachable catalog is almost
           // always a missing key or no network, and "no models advertised"
           // read as "the platform has none" rather than "this client could not
           // ask". On byok "no models" has a third cause — the relay is fine and
           // the account is fine, this machine simply holds no provider key yet,
-          // which is exactly what /byok-key fixes.
-          note(c, byok
-            ? 'No relayable models — this machine holds no provider key yet. Save one with /byok-key <provider>, then retry /model.'
-            : c.state().online
-              ? 'Could not read the model catalog (offline, or the server refused it) — /models retries.'
-              : // The key travels in the environment only (client/aegis.js reads
-                // AEGIS_API_KEY); /login is an unavailable command here, so
-                // pointing at it would send the user to a refusal.
-                'No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free at https://aegiscloud.org), then retry /model.');
+          // which is exactly what /byok-key fixes. On custom an empty list is
+          // never a network problem: the catalog is local, so the only cause is
+          // that it has not been filled in yet.
+          note(c, custom
+            ? 'No custom endpoints yet — /model add <id> <name> <model> <baseURL> registers one (its key is prompted, or pass it last).'
+            : byok
+              ? 'No relayable models — this machine holds no provider key yet. Save one with /byok-key <provider>, then retry /model.'
+              : c.state().online
+                ? 'Could not read the model catalog (offline, or the server refused it) — /models retries.'
+                : // The key travels in the environment only (client/aegis.js reads
+                  // AEGIS_API_KEY); /login is an unavailable command here, so
+                  // pointing at it would send the user to a refusal.
+                  'No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free at https://aegiscloud.org), then retry /model.');
           c.render();
           return true;
         }
@@ -881,26 +909,33 @@ const COMMANDS = [
         // from its own default with no error. Say so where the pin is visible
         // rather than letting the reply look like the pinned model. On byok the
         // failure mode is different and louder (the relay 400s on a provider it
-        // has no key for), so the sentence names the right one.
+        // has no key for), so the sentence names the right one; on custom the
+        // entry was simply removed or renamed after it was pinned.
         if (c.ctx.model && !models.some((m) => m.id === c.ctx.model)) {
-          note(c, byok
-            ? `pinned model "${c.ctx.model}" is not one this machine can relay — pick from the list below.`
-            : `pinned model "${c.ctx.model}" is not in the catalog — the pool will answer with its own default; pick one below.`);
+          note(c, custom
+            ? `pinned model "${c.ctx.model}" is not in your custom catalog — pick one below, or re-add it with /model add.`
+            : byok
+              ? `pinned model "${c.ctx.model}" is not one this machine can relay — pick from the list below.`
+              : `pinned model "${c.ctx.model}" is not in the catalog — the pool will answer with its own default; pick one below.`);
         }
-        // The overlay's own copy promises /model add|remove (overlays.js, a
-        // separate workstream); this build refuses both, so say here how a
-        // model is actually selected.
-        note(c, byok
-          ? '/model <id> pins one for this session; /models lists what this machine can relay.'
-          : '/model <id> pins one for this session; /models lists what the server advertises.');
+        // The overlay's subtitle promises /model add|remove, and that promise is
+        // now kept: the custom class owns this catalog, so the verbs are real
+        // there. Say which surface applies to the live class instead of the
+        // blanket "this build refuses both" that used to sit here.
+        note(c, custom
+          ? '/model <id> pins one for this session; /model add|key|remove manage the catalog; /models lists it.'
+          : byok
+            ? '/model <id> pins one for this session; /models lists what this machine can relay.'
+            : '/model <id> pins one for this session; /models lists what the server advertises.');
         // `cls` rides on the overlay so the picker's title and subtitle render
         // for the class that opened it, even if /class moves while it is open.
         c.openOverlay({ type: 'model', items: models, sel: 0, current: c.ctx.model, cls });
         return true;
       }
       if (id === 'list') {
-        await loadModels(c);
-        const models = c.state().models || [];
+        // Filtered like the picker above: the panel lists what can be pinned,
+        // so it cannot carry the alias rows the loader returns alongside them.
+        const models = pickerEntries(await loadModels(c));
         if (!models.length) note(c, 'No pinnable models advertised — /models lists the server\'s ids.');
         else panel(c, panels.buildModelList(c.ctx.model, models, c.ctx));
         c.render();
@@ -1020,8 +1055,7 @@ const COMMANDS = [
       // so a pooled id becomes "no key saved for <that id>" at the relay.
       // Warn, never refuse: the catalog is cached, and refusing would break a
       // pin made against a server that is briefly unreachable.
-      await loadModels(c);
-      const models = c.state().models || [];
+      const models = (await loadModels(c)) || [];
       if (models.length && !models.some((m) => m.id === id)) {
         note(c, byok
           ? `"${id}" is not one this machine can relay — a byok id is "<provider>:<model>", and the relay will refuse anything else. /models lists the real ids.`
