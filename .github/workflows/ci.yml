@@ -11,7 +11,22 @@ permissions:
 jobs:
   validate:
     name: Validate wrapper
-    runs-on: ubuntu-latest
+    # Runner selection, and why it is conditional rather than a plain label:
+    #
+    # This repository is PUBLIC and this workflow triggers on `pull_request`.
+    # A self-hosted runner executes whatever the checked-out ref contains, so
+    # routing PRs to it would let a fork PR run arbitrary code on the machine
+    # that holds the local credentials. Therefore ONLY `push` may use the
+    # self-hosted runner, and only when the CI_RUNNER repo variable is set:
+    #
+    #   gh variable set CI_RUNNER --repo aegisinfo/aegiscode-plugin \
+    #     --body '["self-hosted"]'
+    #
+    # Unset (or a PR event) falls back to ubuntu-latest, i.e. the previous
+    # behaviour. GitHub-hosted minutes are blocked by an account billing lock,
+    # which is the only reason the self-hosted path exists; deleting the
+    # variable reverts this file to its original routing.
+    runs-on: ${{ github.event_name == 'push' && vars.CI_RUNNER != '' && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -224,7 +239,9 @@ jobs:
 
   electron-smoke:
     name: Headless Electron smoke (P3.6)
-    runs-on: ubuntu-latest
+    # Same conditional routing as the `validate` job above — see the comment
+    # there. PRs never land on the self-hosted runner.
+    runs-on: ${{ github.event_name == 'push' && vars.CI_RUNNER != '' && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -232,7 +249,13 @@ jobs:
         with:
           node-version: 20
 
+      # Hosted runners are bare and have no X server, so they need xvfb
+      # installed (and passwordless sudo to do it). The local self-hosted
+      # runner already has a live DISPLAY (:0) but NO passwordless sudo, and
+      # `test/electron-smoke.mjs` prefers an existing DISPLAY over xvfb-run —
+      # so installing here would fail, not help. Skip it off-hosted.
       - name: Install xvfb
+        if: runner.environment == 'github-hosted'
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Cache Electron download
