@@ -447,9 +447,22 @@ async function main() {
     'successor-still-running',
     'successor-stopped-by-its-own-press',
     'successor-cancelled-once',
+    // The reasoning-only leg waits for one more stopped bubble rather than for
+    // a label, because three earlier legs already leave stopped bubbles behind
+    // and a last-stopped lookup is truthy immediately. Pinned so that anchor
+    // cannot be dropped silently.
+    'reasoning-only-added-a-stopped-bubble',
     'reasoning-only-streamed-no-answer',
     'reasoning-only-labelled',
     'reasoning-only-not-empty',
+    // Phase 11's ⊘ leg. It rides the queue progress channel rather than the
+    // transcript, because the transcript drops run frames by design — see
+    // toolMarkPhase in desktop/test/electron-smoke-main.js.
+    'queue-run-frame-marked-interrupted',
+    'queue-run-frame-not-marked-ok',
+    'queue-run-frame-names-the-tool',
+    'queue-done-frame-marked-ok',
+    'queue-failed-frame-marked-cross',
   ];
   for (const name of expectedDriverChecks) {
     check(
