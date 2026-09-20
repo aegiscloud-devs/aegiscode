@@ -23,7 +23,7 @@ Status:
 - [x] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
 - [x] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
 - [x] Phase 13 — CI unblock: self-hosted runner
-- [ ] Phase 14 — harness determinism: the successor-turn timeout
+- [x] Phase 14 — harness determinism: the successor-turn timeout
 
 ---
 
@@ -557,7 +557,7 @@ See Phase 14 for the remaining harness-flake work.
 
 ---
 
-## Phase 14 — harness determinism: the successor-turn timeout
+## Phase 14 ✅ — harness determinism: the successor-turn timeout
 
 Scope. One smoke run in four during Phase 11 died with
 `timed out waiting for the successor turn to stream`
@@ -565,14 +565,101 @@ Scope. One smoke run in four during Phase 11 died with
 the Phase 11 diff, and it has neither been reproduced deliberately nor proven
 pre-existing.
 
+Done. The instrument is the wait itself, not a bystander assertion beside it.
+Every "this turn has streamed enough" wait now goes through `waitForTurn` in
+`desktop/test/electron-smoke-main.js`, which returns how long the wait actually
+took and which row satisfied it, and the predicate it polls is the shared
+`TURN_PROBE` in `desktop/test/turn-probe.js` — the same text the negative
+control evaluates, not a copy. Two facts pin the reading to *this* turn: the
+live row (`liveRow()` = the first row carrying a cancel button) must be at or
+past the row count observed before the submit (`since`), and it must be the
+newest row, because a streaming turn is always appended last. Each of the four
+anchored waits is recorded as a named check (`primary-wait-anchored`,
+`double-press-wait-anchored`, `successor-wait-anchored`,
+`reasoning-only-wait-anchored`), so a wait satisfied by a previous leg's
+leftover row fails CI instead of passing quietly; the margin and the anchor of
+every wait also travel back to the wrapper on an `SMOKE_WAITS` line, which is
+what makes the N-run loop able to read them. `AEGIS_SMOKE_STALL_STREAM=<n>`
+turns any leg into a deliberately stalled one — a few chunks, then a response
+left open and quiet — so the timeout path is reachable on demand rather than
+only in the wild.
+
+N-run margin. `AEGIS_SMOKE_REPEAT=8 node test/electron-smoke.mjs`, run twice
+from the repo root on the real display (Electron + `DISPLAY=:0`): **16/16 runs
+green, exit 0**, `OK — 8 run(s), 0 failed` each time. Deadline is 20000ms per
+wait; worst observed waited time and margin per leg, across all 16 runs:
+
+- `primary` — worst 1255ms of 20000ms (**margin 18745ms**), on run 8 of the
+  first collection; typical 1231–1253ms. It is the slowest leg of the four
+  because it is the only one waiting on 3000 chars (`waitForTurn(win,
+  rowsBefore, 3000, ...)`) rather than 600–1200, which at the stub's 25ms drip
+  is ~42 chunks of real stream time. Anchor `row 1 >= since 0 / 2 rows` in every
+  run.
+- `doublePress` — worst 317ms of 20000ms (**margin 19683ms**); anchor
+  `row 3 >= since 2 / 4 rows` in every run.
+- `successor` — worst 533ms of 20000ms (**margin 19467ms**); across the 16 runs
+  min 511ms, median 514–515ms, max 533ms. Anchor
+  `row 5 >= since 4 / 6 rows` in every run.
+- `reasoningOnly` — worst 317ms of 20000ms (**margin 19683ms**); anchor
+  `row 7 >= since 6 / 8 rows` in every run.
+
+The anchors are not just reported, they are asserted: the row indexes above are
+the `index >= since` / `index === rows - 1` pair read off the same probe
+evaluation that let each wait through, and all four `*-wait-anchored` checks pass
+on all 16 runs. What the numbers settle is the phase's actual question: the leg
+that died in Phase 11 was **never near its deadline**. The successor wait is
+satisfied in ~0.5s — 2.6% of the 20s it has — so the failure was not slowness,
+and no wall-clock budget change would have fixed it. It was a predicate with no
+anchor that a leftover row could leave unsatisfied, and the anchored predicate
+plus the deliberately stalled leg are what make that state observable on demand.
+
+Falsifiability, both halves verified live rather than asserted:
+
+- **Deleting the anchor clause turns 3 tests red.** Removing the single line
+  `if (i < since || i !== rows.length - 1) return 0;` from `TURN_PROBE` in
+  `desktop/test/turn-probe.js` makes
+  `node --test test/turn-probe.test.mjs` report **3 pass / 3 fail** (the two
+  stale-row rejections and the reasoning-field rejection); restoring the line
+  returns it to 6/6. Each of those tests also asserts the *bare* length probe
+  is satisfied by the same stale state, so the control cannot be vacuous — it
+  shows the leftover row really did answer the old wait.
+- **The original timeout is reproducible on purpose.**
+  `AEGIS_SMOKE_STALL_STREAM=2 node test/electron-smoke.mjs` exits **1** with the
+  exact Phase 11 message — `timed out waiting for the successor turn to stream`
+  — now carrying the transcript it was reading
+  (`row 5, cancel=true, body=408, sendDisabled=true`) instead of a bare
+  "timed out". 68 passed, 24 failed, and the failures name the missing legs
+  (`stub-was-used: 3 streams, expected 4`) rather than reporting only
+  `driver-ok: false`.
+
 Exit criteria:
 - The failure is reproduced deliberately, or the timeout's margin is measured
-  and shown to be the cause.
+  and shown to be the cause. ✅ Both: 16 runs measured (worst margin 18745ms,
+  successor worst 533ms of 20000ms) **and** reproduced deliberately via
+  `AEGIS_SMOKE_STALL_STREAM=2` → exit 1.
 - The leg either stops flaking over N consecutive runs or its wait gains an
-  anchor that cannot be satisfied by a previous leg's state — the defect class
-  that already bit twice, in `LAST_STOPPED` and in the preset leg's stale-row
-  predicate.
-- A negative control proves any replacement assertion can fail.
+  anchor that cannot be satisfied by a previous leg's state. ✅ Both: 16/16
+  green, and the wait now requires `index >= since` **and**
+  `index === rows - 1`.
+- A negative control proves any replacement assertion can fail. ✅ Deleting the
+  anchor clause → 3 of 6 `turn-probe` tests red; the stall switch → the real
+  timeout, exit 1.
+
+Recorded correction from the earlier attempt at this measurement. The first
+N-run loop reported every run as failed with "no waits evidence" even though the
+runs were green: it parsed `SMOKE_EVIDENCE` out of the wrapper's stdout, but
+that line is consumed one process down inside the driver and never re-emitted
+upward, so the loop was reading the wrong process tree. The wrapper now prints
+its own `SMOKE_WAITS` line from the evidence it already holds, which is the line
+the loop parses. That defect was in the instrument, not the harness.
+
+Not carried forward: CI still runs the default single iteration. The N-run loop
+is opt-in via `AEGIS_SMOKE_REPEAT`, because 16 runs of the full harness cost
+minutes and the anchor assertion — the part that detects the defect — runs in
+every single iteration and in the unit-test step.
+
+Commit closing this phase: `893d6b9` (instrument + anchors, on top of `bf8c2fa`),
+plus the plan-closure commit.
 
 ---
 
