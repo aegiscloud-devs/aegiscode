@@ -223,7 +223,15 @@ const deep = (a, b, m) =>
   eq(roll.estimate, 0, 'and no local price is invented either — the CLI writes none');
 
   const APP = readFileSync(join(root, 'desktop', 'renderer', 'app.js'), 'utf8');
-  const stop = APP.slice(APP.indexOf("if (isCancellation(err, { userStopped }))"));
+  // Anchored on the catch's classification call rather than on the exact
+  // object literal it passes: the classification gained a turn token
+  // (`stoppedTurn === myTurn`), and an anchor that pins the whole expression
+  // goes stale on every such change. The lookup is checked — a bare
+  // `indexOf` returning -1 used to slice from the last character and let the
+  // assertions below pass over a one-character body.
+  const anchor = APP.indexOf('isCancellation(err,');
+  assert(anchor !== -1, 'send() still classifies the abort with isCancellation(err, ...)');
+  const stop = APP.slice(anchor);
   const body = stop.slice(0, stop.indexOf('autoPersistTurn'));
   assert(body.length > 0, 'the abort path is where the smoke test says it is');
   assert(/foldRoll\(/.test(body), 'the abort path folds the stopped turn into the session roll');

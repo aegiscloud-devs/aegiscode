@@ -257,13 +257,25 @@ assert(
 );
 // A deliberate stop must stay distinguishable from a failure, or the abort the
 // user asked for is reported as an error and the partial answer is discarded.
+// The stop is scoped to the turn it was asked of. A global flag could be left
+// `true` by an earlier turn — making an unrelated transport failure later look
+// like a stop the user asked for — and a second press during teardown would
+// re-enter the abort. Both are one token comparison now.
 assert(
-  /function stopPendingTurn\(\)[\s\S]*?userStopped\s*=\s*true[\s\S]*?models\.cancel\(/.test(appCode),
-  'stopPendingTurn records userStopped before aborting the transport'
+  /function stopPendingTurn\(\)[\s\S]*?stopAppliesTo\(runningTurn,\s*stoppedTurn\)[\s\S]*?stoppedTurn\s*=\s*runningTurn[\s\S]*?models\.cancel\(/.test(appCode),
+  'stopPendingTurn gates on stopAppliesTo and records stoppedTurn before aborting the transport'
 );
 assert(
-  /isCancellation\(err,\s*\{\s*userStopped\s*\}\)/.test(appCode),
-  "send()'s catch classifies the abort with isCancellation(err, { userStopped })"
+  /isCancellation\(err,\s*\{\s*userStopped:\s*stoppedTurn\s*===\s*myTurn\s*\}\)/.test(appCode),
+  "send()'s catch classifies the abort against this turn's token, not a global"
+);
+assert(
+  /const myTurn\s*=\s*\+\+turnSeq;[\s\S]*?runningTurn\s*=\s*myTurn;[\s\S]*?stoppedTurn\s*=\s*null;/.test(appCode),
+  'send() claims its own turn token, clearing any stale stop from a previous turn'
+);
+assert(
+  /finally\s*\{[\s\S]*?if\s*\(runningTurn\s*===\s*myTurn\)/.test(appCode),
+  'the teardown only clears the pending state the turn still owns'
 );
 
 // 5b. The reader's veto. It must be registered by transcript-view.js

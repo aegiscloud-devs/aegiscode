@@ -76,9 +76,13 @@ class FakeElement extends FakeTarget {
 }
 
 class FakeKeyboardEvent {
-  constructor(key) {
+  constructor(key, opts) {
+    const o = opts || {};
     this.type = 'keydown';
     this.key = key;
+    // Auto-repeat: the browser re-fires keydown while a key is held. Modelled
+    // because it is the whole reason the handler has a repeat guard.
+    this.repeat = o.repeat === true;
     this.defaultPrevented = false;
   }
   preventDefault() {
@@ -445,6 +449,16 @@ function boot({ messages, clock }) {
   doc.dispatch(new FakeKeyboardEvent('Escape'));
   assert(stopped.length === 2, 'Escape keeps working for later turns (not a one-shot latch)');
 
+  // THE OTHER HALF OF THE SYMPTOM: holding the key. Auto-repeat keeps firing
+  // keydown after the interrupted turn has ended, and the repeats that land
+  // once the user has already sent the next message stop *that* turn — the
+  // keyboard twin of a stuck cancel button. A repeat is one intent, not one per
+  // event, so it must not be counted as a fresh stop.
+  const repeat = new FakeKeyboardEvent('Escape', { repeat: true });
+  doc.dispatch(repeat);
+  assert(stopped.length === 2, 'a held Escape key does not stop a second turn');
+  assert(repeat.defaultPrevented === false, 'a repeat is not consumed either');
+
   // With nothing running, Escape is inert: it must never turn into a surprise
   // stop or a swallowed key.
   pending = false;
@@ -483,10 +497,10 @@ function boot({ messages, clock }) {
 // .................. the interrupt must end as a *stop*, never as a failure ....
 // The other half of the Escape symptom: an abort rejects over IPC, and the
 // renderer would otherwise throw the partial answer away and paint a red error.
-// app.js's stop path records `userStopped` before aborting and send()'s catch
-// classifies with isCancellation(err, {userStopped}) — so assert that the abort
-// shape a stopped turn produces is classified as a deliberate stop, while a
-// genuine socket failure is not relabelled as one.
+// app.js records the stopped turn's token before aborting and send()'s catch
+// classifies with isCancellation(err, {userStopped: stoppedTurn === myTurn}) —
+// so assert that the abort shape a stopped turn produces is classified as a
+// deliberate stop, while a genuine socket failure is not relabelled as one.
 {
   const { isCancellation } = realm;
   assert(typeof isCancellation === 'function', 'stream-policy.js publishes isCancellation');

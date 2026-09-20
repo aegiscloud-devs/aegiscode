@@ -83,6 +83,70 @@ function isCancellation(err, opts) {
   return ABORT_SIGNATURES.some((re) => re.test(msg));
 }
 
+/**
+ * Should a stop request reach the turn running right now?
+ *
+ * `runningTurn` is the token of the turn in progress (null when idle) and
+ * `stoppedTurn` is the token already asked to stop. The abort is not
+ * instantaneous — the transport has to unwind before `send()`'s catch runs — so
+ * a second press lands on a turn that is still nominally running. That second
+ * press is the *same* intent and must not re-enter.
+ *
+ * The two writers keep the pair consistent: app.js only ever assigns
+ * `stoppedTurn = runningTurn`, and claiming a new turn sets `stoppedTurn = null`
+ * alongside `runningTurn = myTurn`. So `stoppedTurn` is never some *other*
+ * turn's number, and `runningTurn !== stoppedTurn` means exactly "not already
+ * stopping". What keeps a finished turn's stop off its successor is that
+ * invariant plus the catch's `stoppedTurn === myTurn` — not a refusal here. A
+ * press on a live successor is legitimate and does reach it.
+ */
+function stopAppliesTo(runningTurn, stoppedTurn) {
+  if (runningTurn == null) return false;
+  return runningTurn !== stoppedTurn;
+}
+
+/**
+ * What a cancelled turn leaves on screen, and what it honestly is.
+ *
+ * `streamedText || reasoningText` collapsed two different outcomes into one
+ * string: a turn cut off after real answer text, and a turn cut off with
+ * deliberation but no answer. The second is not a failure and the user should
+ * keep it, but folding it in as if it were the answer loses the distinction —
+ * so the case is named here and the caller labels it. With neither, the
+ * placeholder is still returned rather than an empty bubble.
+ */
+function salvageTurn(input) {
+  const i = input || {};
+  const streamed = typeof i.streamedText === 'string' ? i.streamedText : '';
+  const reasoning = typeof i.reasoningText === 'string' ? i.reasoningText : '';
+  if (streamed) return { text: streamed, reasoning: reasoning, kind: 'answer' };
+  if (reasoning) return { text: reasoning, reasoning: '', kind: 'reasoning-only' };
+  return { text: '(stopped before any output)', reasoning: '', kind: 'empty' };
+}
+
+/**
+ * The status glyph for one tool-activity line.
+ *
+ * Only an explicit `true` is a ✓. A call with no `ok` at all is a call whose
+ * result never arrived — the tool-call-mid-abort case — and drawing it as ✓
+ * claimed success for work the turn never finished. It gets its own mark
+ * instead of ✗, because interrupted is not the same as failed.
+ */
+function toolMark(tool) {
+  const t = tool || {};
+  if (t.ok === true) return '✓';
+  if (t.ok === false) return '✗';
+  return '⊘';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { nearBottom, shouldFollow, isCancellation, STICK_SLOP_PX };
+  module.exports = {
+    nearBottom,
+    shouldFollow,
+    isCancellation,
+    stopAppliesTo,
+    salvageTurn,
+    toolMark,
+    STICK_SLOP_PX,
+  };
 }

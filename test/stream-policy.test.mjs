@@ -12,6 +12,9 @@ const {
   nearBottom,
   shouldFollow,
   isCancellation,
+  stopAppliesTo,
+  salvageTurn,
+  toolMark,
   STICK_SLOP_PX,
 } = require('../desktop/renderer/stream-policy.js');
 
@@ -135,5 +138,99 @@ assert(isCancellation(new Error('402 insufficient aegis-key balance'), {}) === f
 assert(isCancellation(new Error(''), {}) === false, 'an empty message is not a stop');
 assert(isCancellation(42, {}) === false, 'a non-string, non-Error rejection is not a stop');
 assert(isCancellation({}, {}) === false, 'an object without message/name is not a stop');
+
+// ------------------------------------------------------------------ stopAppliesTo
+// One comparison answers two questions that used to be two flags: "is this the
+// turn I am already stopping?" (do not re-enter) and "is this turn even the one
+// running?" (never reach a successor).
+
+// Idle: nothing to stop.
+assert(stopAppliesTo(null, null) === false, 'a stop with no running turn does nothing');
+
+// The ordinary case: a live turn nobody has stopped yet.
+assert(stopAppliesTo(7, null) === true, 'a stop reaches the turn that is running');
+
+// A second press while the first abort is still unwinding — same turn, already
+// asked. Re-entering would re-cancel the same transport.
+assert(stopAppliesTo(7, 7) === false, 'a second press on the turn already stopping is ignored');
+
+// The stale request: turn 7 was stopped, turn 8 is running. The successor is
+// live and has not been stopped, so a press *now* legitimately reaches it — the
+// successor is protected by the two writers keeping the pair consistent, not by
+// this comparison refusing. `send()` claims a new turn with
+// `stoppedTurn = null`, and app.js only ever writes `stoppedTurn = runningTurn`,
+// so the live invariant is:
+//     stoppedTurn === null || stoppedTurn === runningTurn
+// Under it, `runningTurn !== stoppedTurn` means exactly "not already stopping",
+// which is the idempotency rule. Assert the invariant holds for every pair
+// app.js can actually produce, and the successor case explicitly.
+assert(stopAppliesTo(8, 7) === true, 'a live successor turn is stoppable (it was never asked to stop)');
+assert(stopAppliesTo(8, null) === true, 'which is the same state as a fresh turn');
+for (const running of [null, 0, 1, 7]) {
+  for (const stopped of [null, running]) {
+    const ok = running !== null && stopped !== running;
+    assert(
+      stopAppliesTo(running, stopped) === ok,
+      `reachable pair (running=${running}, stopped=${stopped})`
+    );
+  }
+}
+// A stop cannot be attributed to a turn that is not the running one: that is
+// the catch's `stoppedTurn === myTurn`, and the flag it replaced is what let an
+// old stop relabel a later, unrelated failure.
+assert(
+  stopAppliesTo(7, 7) === false && stopAppliesTo(7, null) === true,
+  'a stop is spent on the turn it was asked of, and only that turn'
+);
+
+// Token 0 is falsy but a real turn: `if (runningTurn)` would call this idle.
+assert(stopAppliesTo(0, null) === true, 'turn token 0 is a running turn, not an absence');
+
+// ------------------------------------------------------------------ salvageTurn
+// Three outcomes, kept distinct so the label cannot drift from the salvage.
+
+{
+  const answer = salvageTurn({ streamedText: 'the answer', reasoningText: 'thinking' });
+  assert(answer.kind === 'answer', 'streamed text wins');
+  assert(answer.text === 'the answer', 'and it is what gets shown');
+  assert(answer.reasoning === 'thinking', 'with the deliberation kept alongside');
+}
+
+{
+  // Cut off mid-deliberation: real content the user asked to keep, and not a
+  // failure — but showing it as the answer would be a lie about what arrived.
+  const only = salvageTurn({ streamedText: '', reasoningText: 'thinking' });
+  assert(only.kind === 'reasoning-only', 'deliberation alone is its own outcome');
+  assert(only.text === 'thinking', 'and its text is what survives');
+  assert(only.reasoning === '', 'moving it to the answer must not duplicate it');
+}
+
+{
+  const empty = salvageTurn({});
+  assert(empty.kind === 'empty', 'nothing streamed is its own outcome');
+  assert(empty.text.length > 0, 'an empty salvage still yields a placeholder, never a blank bubble');
+  assert(empty.reasoning === '', 'and no deliberation');
+}
+
+// Typed garbage must not reach the transcript as a literal `undefined`.
+{
+  const junk = salvageTurn({ streamedText: 42, reasoningText: { a: 1 } });
+  assert(junk.kind === 'empty', 'non-string streamed content is not text');
+  assert(typeof junk.text === 'string', 'and the placeholder is a string');
+  assert(salvageTurn(null).kind === 'empty', 'a missing input is empty, not a crash');
+  // Whitespace-only text is still text the provider sent, so it is preserved
+  // rather than reformatted — trimming here would be a silent edit.
+  assert(salvageTurn({ streamedText: ' ' }).kind === 'answer', 'whitespace counts as streamed');
+}
+
+// -------------------------------------------------------------------- toolMark
+// A tool call whose result never arrived — the mid-abort case — is neither a
+// success nor a failure, and the old `ok === false ? ✗ : ✓` drew it as ✓.
+assert(toolMark({ ok: true }) === '✓', 'a completed call is a tick');
+assert(toolMark({ ok: false }) === '✗', 'a failed call is a cross');
+assert(toolMark({}) === '⊘', 'a call with no result at all is marked interrupted, not succeeded');
+assert(toolMark({ ok: null }) === '⊘', 'a null result is not a success');
+assert(toolMark({ ok: 'false' }) === '⊘', 'only a literal false is a failure — no string coercion');
+assert(toolMark(null) === '⊘', 'a missing tool record is interrupted, not a crash');
 
 console.log('stream-policy tests passed');
