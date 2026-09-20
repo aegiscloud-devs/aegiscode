@@ -21,7 +21,9 @@ Status:
 - [x] Phase 9 — P3.6 headless Electron smoke in CI (scroll-hold + interrupt)
 - [x] Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
 - [x] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
-- [ ] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
+- [x] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
+- [ ] Phase 13 — CI unblock: self-hosted runner
+- [ ] Phase 14 — harness determinism: the successor-turn timeout
 
 ---
 
@@ -432,29 +434,101 @@ check` exit 0 in both packages.
 
 ---
 
-## Phase 12 — P4 release: cut 0.7.8 / 6.7.8
+## Phase 12 ✅ — P4 release: cut 0.7.8 / 6.7.8
 
-Scope. Two packages are bumped and neither is published.
+Scope. Two packages were bumped and neither was published; the owner's decision
+was **both**.
 
-- `cli/package.json` 6.7.7 → 6.7.8; `desktop/package.json` + the lockfile
-  0.7.7 → 0.7.8. The bump is **uncommitted**.
-- `c04eb4e` (the harness falsifiability fix) and Phase 11's coverage commit are
-  committed but **unpushed**, as is the plan commit that records this phase.
-- The green run above predates the bump, so nothing has yet been verified
-  *after* the version change.
+Outcome, all four exit criteria met:
+
+- The bump is committed as `dac8609` (`cli/package.json` 6.7.7 → 6.7.8;
+  `desktop/package.json` + lockfile 0.7.7 → 0.7.8), that commit also carries the
+  plan updates, and `git status --porcelain` is empty at `dac8609`.
+- The suites and smoke pass **after** the bump, re-run at the pushed commit and
+  not carried over from before it: 71 root suites + 2 desktop-local, 0
+  failures; `test/electron-smoke.mjs` **110 passed, 0 failed** (exit 0);
+  `npm run check` exit 0 in both packages.
+- `npm publish` succeeded for both, and the published versions were confirmed
+  against the registry rather than read off the publish banner:
+  `npm view aegiscode version` → `6.7.8`, `npm view aegis-desktop version` →
+  `0.7.8`, with `dist-tags.latest` moved on both. The first two registry polls
+  still returned the *old* versions, so a zero exit code alone would have
+  reported a release nobody could install yet.
+- No build artifact is tracked: `git ls-files` matches nothing for `*.tgz`,
+  `desktop/release/`, or `node_modules/`, and the pre-commit guards were not
+  bypassed.
+
+Tarball contents were checked, not assumed. A correct version number says
+nothing about whether the release ships the work it was cut for, so both
+published tarballs were inspected: `aegis-desktop@0.7.8` contains
+`renderer/preset-fill.js`, `renderer/stream-policy.js`,
+`renderer/transcript-view.js` and `lib/local/endpoints.js`, and the two files the
+CLI vendors (`renderer/usage.js`, `lib/local/endpoints.js`, per
+`cli/scripts/predist.mjs`) are present and byte-identical to their desktop
+counterparts.
+
+Recorded correction. An earlier report placed the bumped `cli/package.json` in
+`aegiscodex-dev`; that repo has no `cli/` directory at all. All three bumped
+files live in this repo.
+
+Carried forward, not fixed here: CI never ran. Every job on these pushes failed
+in 1–4s with *"The job was not started because your account is locked due to a
+billing issue"*, so no GitHub job has executed on any commit in this phase. The
+local runs above are the only verification that exists. See Phase 13.
+
+---
+
+## Phase 13 — CI unblock: self-hosted runner
+
+Scope. CI has been dead across at least the last four pushes and the failure is
+not code — it is a GitHub billing lock, so the jobs never start. Nothing is
+compiled, tested, or smoke-run remotely; every green result in Phases 8–12 is
+local only. Self-hosted runners are not billed, and
+`/home/neo/actions-runner-plugin/` already exists for exactly this purpose
+(`bin/`, `config.sh`, `env.sh`, `externals/` are extracted) but was never
+registered — there is no `.runner` file, and
+`gh api repos/aegisinfo/aegiscode-plugin/actions/runners` returns
+`total_count: 0`.
 
 Exit criteria:
-- The bump is committed with `git status` otherwise clean.
-- The suites and the smoke pass **after** the bump, not merely before it.
-- `npm publish` succeeds for whichever package the owner authorises, and the
-  published version is confirmed with `npm view` rather than assumed from a
-  zero exit code.
-- No build artifact (`desktop/release/`, `*.tgz`, `node_modules`) is committed;
-  the repo's pre-commit guards are never bypassed.
+- A self-hosted runner is registered against this repo and reports `online` via
+  `gh api repos/aegisinfo/aegiscode-plugin/actions/runners`.
+- `.github/workflows/ci.yml` selects it, and at least one full run of both jobs
+  (`check`-style and `electron-smoke`) completes green — a run that **starts**,
+  which is the thing the billing lock prevents today.
+- The smoke job still gets a display: the hosted job uses `xvfb-run`, which is
+  not installed here, so the self-hosted path must use the runner's own
+  `DISPLAY` (the harness already handles a pre-existing display).
+- The runner is a second independent check on the release: it must reproduce the
+  local `110 passed / 0 failed`, not merely exit 0.
 
-Open decision (must be locked before this phase runs): whether to publish
-`aegiscode`, `aegis-desktop`, or both. They are separate packages with separate
-release surfaces, and a publish is irreversible on npm.
+Open decision (must be locked before this phase runs): whether the runner should
+be repo-scoped (this repo only) or org-scoped, and whether it should be
+registered as a persistent service (`svc.sh install`) or run on demand.
+
+Recorded context. `/home/neo/actions-runner/.runner` is a *different* runner,
+registered as agent `neo` against `aegisinfo/ae-guix`, not this repo. It must
+not be reconfigured — registration is destructive to an existing runner's
+identity.
+
+---
+
+## Phase 14 — harness determinism: the successor-turn timeout
+
+Scope. One smoke run in four during Phase 11 died with
+`timed out waiting for the successor turn to stream`
+(`liveText().length > 1200` within `waitFor`'s 20s). That leg is not touched by
+the Phase 11 diff, and it has neither been reproduced deliberately nor proven
+pre-existing.
+
+Exit criteria:
+- The failure is reproduced deliberately, or the timeout's margin is measured
+  and shown to be the cause.
+- The leg either stops flaking over N consecutive runs or its wait gains an
+  anchor that cannot be satisfied by a previous leg's state — the defect class
+  that already bit twice, in `LAST_STOPPED` and in the preset leg's stale-row
+  predicate.
+- A negative control proves any replacement assertion can fail.
 
 ---
 
