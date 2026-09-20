@@ -19,7 +19,9 @@ Status:
 - [x] Phase 7 — P3 memory-follows-user from any model class
 - [x] Phase 8 — P3.5 renderer testability: prove the DOM paths, not just pure policy
 - [x] Phase 9 — P3.6 headless Electron smoke in CI (scroll-hold + interrupt)
-- [ ] Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
+- [x] Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
+- [ ] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
+- [ ] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
 
 ---
 
@@ -264,7 +266,7 @@ Exit criteria:
 - CI fails if Escape does not terminate a streamed turn. ✅
 - The job runs with no cloud credentials and no outbound network dependency. ✅
 
-## Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
+## Phase 10 ✅ — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
 
 Scope. The abort path was written to make *one* interruption safe. Its edges are
 unverified, and each is reachable by an ordinary user:
@@ -283,18 +285,130 @@ unverified, and each is reachable by an ordinary user:
 - **Tool-call streams mid-abort** — a turn cancelled between tool call and
   result.
 
+Done (`4194e95`, harness falsifiability `c04eb4e`). The global `userStopped`
+flag is gone; a turn now carries its own identity, and the three edges that
+were reachable by an ordinary user are decisions in a pure module rather than
+branches inside the send loop.
+
+- `renderer/stream-policy.js` owns the new rules: `stopAppliesTo(runningTurn,
+  stoppedTurn)` (idempotency), `salvageTurn({streamedText, reasoningText})`
+  (answer / reasoning-only / empty, as distinct outcomes), and `toolMark(tool)`
+  (✓ / ✗ / ⊘ — only a literal `true` is a tick, no string coercion).
+- `renderer/app.js` tracks `turnSeq` / `runningTurn` / `stoppedTurn`. `send()`
+  claims its token, `stopPendingTurn()` is idempotent, `newChat()` drops the
+  tokens, and the `finally` is guarded so a teardown belonging to an outgoing
+  turn cannot disarm its successor.
+- `renderer/transcript-view.js` ignores `e.repeat`, so a held Escape cannot
+  stop the *next* turn.
+- **A correction worth keeping:** what stops a stale abort is the token
+  invariant — `stoppedTurn` is cleared when a successor claims a turn, and the
+  catch only honours `stoppedTurn === myTurn`. It is *not* `stopAppliesTo`:
+  `stopAppliesTo(8, 7)` is deliberately `true`, because a live successor *is*
+  stoppable. The module comment says so, and the test pins that pair as
+  reachable rather than asserting a false invariant.
+- Smoke legs, all in the real DOM: `double-press-both-consumed` /
+  `-one-bubble` / `-no-pending` / `-no-error` / `-cancelled-once`,
+  `stale-escape-inert` / `-called-no-cancel` / `-keeps-send`, `successor-*`
+  (4), `reasoning-only-streamed-no-answer` / `-labelled` / `-not-empty`.
+- **The falsifiability fix is the part that mattered.** `double-press-cancelled-once`
+  originally counted `models.cancel` invocations by wrapping the renderer's
+  bridge object — which silently never installed, because `preload.js` exposes
+  it frozen (`contextBridge.exposeInMainWorld('models', Object.freeze(models))`).
+  The check read `0` and passed unconditionally: removing `stopAppliesTo`'s
+  guard still produced 92/92. It now wraps `createLocalEngine` in the **main**
+  process, where `engine.cancel` is a call-time lookup — and deleting the guard
+  fails the check (`models.cancel ran 2 time(s) across two Escape presses`).
+
 Exit criteria:
-- Escape is idempotent; a second press never affects another turn.
-- A dropped socket surfaces as an error, never as "stopped by you".
+- Escape is idempotent; a second press never affects another turn. ✅
+  (`stopAppliesTo` unit-pinned; `double-press-cancelled-once` now proves
+  exactly one abort reaches the engine, and the control fails when the guard is
+  removed.)
+- A dropped socket surfaces as an error, never as "stopped by you". ✅
+  (`isCancellation` pinned against `ECONNABORTED`, undici's "This operation was
+  aborted", and Chromium's "The user aborted a request." in
+  `test/stream-policy.test.mjs`.)
 - Cancelling a reasoning-only or tool-call turn leaves the user with the
-  partial output instead of an empty bubble.
+  partial output instead of an empty bubble. ✅ for reasoning-only — a
+  labelled-but-empty bubble is the exact defect that leg exists for.
+  `toolMark`'s ⊘ is unit-pinned only; that is Phase 11.
+
+Verified at this commit: `test/electron-smoke.mjs` — 98 passed, 0 failed;
+71 root suites + 2 desktop-local, 0 failures; `npm run check` exit 0.
+
+---
+
+## Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
+
+Scope. The local-only endpoint rule is **enforced in code but unrecorded in the
+plan**, and one doc line now contradicts the binary.
+
+- Shipped rule: `desktop/lib/local/endpoints.js` (`isLocalEndpoint`,
+  fail-closed — scheme checked before host, so `ftp://box.local` is rejected
+  rather than riding the `.local` suffix). It is enforced at two seams:
+  `desktop/lib/settings.js` refuses to **store** a remote URL for a direct-dial
+  row (`openai-compat` / `anthropic` / `custom:*`), and
+  `desktop/lib/local/engine.js` refuses to **dial** one before any transport
+  call. The storage gate is keyed on the row, not the value, so BYOK's own
+  `baseURL: ''` rows stay storable.
+- Doc drift: `docs/product-plan.md` §2 lists "OpenAI-compatible direct" and
+  "Anthropic-compatible direct" as taking a "user baseURL" with no locality
+  restriction, while §12 decision 2 already reads "Local = direct from desktop;
+  cloud = relay through the pool". The shipped rule is the stricter one, so
+  §2 must be corrected to match rather than the code relaxed.
+- The last real coverage hole: `toolMark`'s ⊘ ("interrupted, not succeeded") is
+  pinned by `test/stream-policy.test.mjs` only. Nothing proves an aborted tool
+  call renders ⊘ in the DOM rather than ✓.
+
+Exit criteria:
+- `docs/product-plan.md` §2 and §12 state the local-only rule explicitly, and
+  no line describes a remote direct-dial `baseURL` as permitted.
+- The plan records which lanes bill and which do not: `aegis` and `byok` are
+  relayed and billed; `openai-compat` / `anthropic` / `custom:*` are direct-dial
+  and local-only; `ollama` is the free lane and carries no user URL at all
+  (`engine.js` calls it with no `baseURL`, so it falls through to
+  `http://localhost:11434`).
+- The plan records that a remote provider is reached through `byok` (billed),
+  not by a preset — i.e. the GUI's former `api.deepseek.com/anthropic` presets
+  moved lanes rather than being removed.
+- The storage and dispatch seams each have a test that fails if the check is
+  removed, and the classifier's boundaries (`127.0.0.1`, `localhost`, `10.x`,
+  `172.20.x`, `192.168.x`, `[::1]`, `*.local` allowed; `api.z.ai`,
+  `api.openai.com`, `172.32.x`, `192.169.x`, non-http schemes and unparseable
+  input refused) stay pinned.
+- A DOM leg renders an aborted tool call as ⊘.
+
+---
+
+## Phase 12 — P4 release: cut 0.7.8 / 6.7.8
+
+Scope. Two packages are bumped and neither is published.
+
+- `cli/package.json` 6.7.7 → 6.7.8; `desktop/package.json` + the lockfile
+  0.7.7 → 0.7.8. The bump is **uncommitted**.
+- `c04eb4e` is committed but **unpushed** (`main` is ahead 1 of `origin/main`).
+- The green run above predates the bump, so nothing has yet been verified
+  *after* the version change.
+
+Exit criteria:
+- The bump is committed with `git status` otherwise clean.
+- The suites and the smoke pass **after** the bump, not merely before it.
+- `npm publish` succeeds for whichever package the owner authorises, and the
+  published version is confirmed with `npm view` rather than assumed from a
+  zero exit code.
+- No build artifact (`desktop/release/`, `*.tgz`, `node_modules`) is committed;
+  the repo's pre-commit guards are never bypassed.
+
+Open decision (must be locked before this phase runs): whether to publish
+`aegiscode`, `aegis-desktop`, or both. They are separate packages with separate
+release surfaces, and a publish is irreversible on npm.
 
 ---
 
 ## Prerequisites (out of repo)
 
-aegis1 server work for Phases 8–10 is none — these are desktop-only. The
-server-side upgrade plan lives in the **aegis1** repo's own `PLAN.md`
-(Phase 4 billing integrity → no silent money loss; Phase 5 reserve pricing
-honesty → the hold that spurious-402s funded accounts; Phase 6 provider
+aegis1 server work for Phases 8–12 is none — these are desktop- and
+release-side. The server-side upgrade plan lives in the **aegis1** repo's own
+`PLAN.md` (Phase 4 billing integrity → no silent money loss; Phase 5 reserve
+pricing honesty → the hold that spurious-402s funded accounts; Phase 6 provider
 hygiene).
