@@ -386,7 +386,8 @@ Scope. Two packages are bumped and neither is published.
 
 - `cli/package.json` 6.7.7 → 6.7.8; `desktop/package.json` + the lockfile
   0.7.7 → 0.7.8. The bump is **uncommitted**.
-- `c04eb4e` is committed but **unpushed** (`main` is ahead 1 of `origin/main`).
+- `c04eb4e` (the harness falsifiability fix) is committed but **unpushed**, as is
+  the plan commit that records this phase.
 - The green run above predates the bump, so nothing has yet been verified
   *after* the version change.
 
