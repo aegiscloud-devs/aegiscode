@@ -2751,21 +2751,17 @@ function applyCustomPreset(cls, modelId) {
   const row = els.settingsList.querySelector(`.setting-row[data-provider="${cls}"]`);
   const baseInput = row && row.querySelector('.setting-base');
   if (!baseInput) return;
-  const current = baseInput.value.trim();
-  if (blockedCustomClasses.has(cls)) {
-    // Blocked row: the stored endpoint is refused, so the never-clobber rule
-    // above does not apply — replace it outright and say what to do next.
-    baseInput.value = preset.baseURL;
-    els.modelHint.textContent =
-      `stored endpoint refused — replaced with ${preset.baseURL}; ` +
-      'click Save in Provider settings to replace the refused endpoint.';
-  } else if (!current) {
-    baseInput.value = preset.baseURL;
-    els.modelHint.textContent = `filled in — click Save in Provider settings below to store the ${preset.label} endpoint.`;
-  } else if (current !== preset.baseURL) {
-    els.modelHint.textContent =
-      `${preset.label} needs base URL ${preset.baseURL} — Provider settings below has ${current}. Update it there too.`;
-  }
+
+  // Which branch applies (fill / refuse-to-clobber / repair a blocked row) is
+  // preset-fill.js's decision, unit-tested there. This function only writes
+  // what it returns — `null` on either field means leave it as it is.
+  const plan = planPresetFill({
+    preset,
+    current: baseInput.value.trim(),
+    blocked: blockedCustomClasses.has(cls),
+  });
+  if (plan.baseURL !== null) baseInput.value = plan.baseURL;
+  if (plan.hint !== null) els.modelHint.textContent = plan.hint;
 }
 
 // -------------------------------------------------------------- settings pane
