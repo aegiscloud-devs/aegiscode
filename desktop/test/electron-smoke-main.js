@@ -100,7 +100,7 @@ function check(name, ok, detail) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function waitFor(fn, label, timeoutMs = 20000, intervalMs = 100) {
+async function waitFor(fn, label, timeoutMs = 20000, intervalMs = 100, observe = null) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let value;
@@ -110,7 +110,23 @@ async function waitFor(fn, label, timeoutMs = 20000, intervalMs = 100) {
       value = null;
     }
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    if (Date.now() > deadline) {
+      // A bare "timed out" cannot be acted on: it does not say whether the
+      // stream stalled, the turn never started, or the wait was reading a row
+      // that will never grow. When a caller passes an `observe` probe, the
+      // observed state goes into the message.
+      let seen = null;
+      if (observe) {
+        try {
+          seen = await observe();
+        } catch (err) {
+          seen = `observing threw: ${err && err.message}`;
+        }
+      }
+      throw new Error(
+        `timed out waiting for ${label}` + (observe ? ` — transcript: ${JSON.stringify(seen)}` : '')
+      );
+    }
     await sleep(intervalMs);
   }
 }
@@ -155,6 +171,29 @@ const HELPERS = `
     var el = r.querySelector('.reasoning');
     return el ? el.textContent : '';
   }
+`;
+
+// The transcript as `liveText()` sees it: every row, which one carries the
+// cancel button (so which one `liveRow()` picks), and how long each body is.
+// Passed as the `observe` probe to the waits that depend on the live row, so a
+// timeout names the row it was reading instead of just failing.
+const TURN_STATE = `
+  var rows = document.querySelectorAll('#messages .msg');
+  var out = { rows: [], live: -1, liveLen: liveText().length,
+              sendDisabled: document.getElementById('send').disabled };
+  Array.prototype.forEach.call(rows, function (r, i) {
+    var b = r.querySelector('.body');
+    var m = r.querySelector('.meta');
+    var c = r.querySelector('.cancel-btn');
+    if (c && out.live === -1) out.live = i;
+    out.rows.push({
+      i: i,
+      cancel: Boolean(c),
+      body: b ? b.textContent.length : -1,
+      meta: m ? m.textContent.slice(0, 40) : ''
+    });
+  });
+  return out;
 `;
 
 const PREPARE = `
@@ -321,6 +360,45 @@ async function pollStopped(win, minCount, timeoutMs = 20000) {
     if (seen.count >= minCount || Date.now() > deadline) return seen;
     await sleep(100);
   }
+}
+
+const ROW_COUNT = `return document.querySelectorAll('#messages .msg').length;`;
+
+// The anchor every "this turn has streamed enough" wait is built on.
+//
+// Length alone is not an anchor. `liveRow()` returns the FIRST row carrying a
+// cancel button, so a wait keyed only on `liveText().length > N` can be
+// satisfied by a row left over from an earlier leg — the same defect class as
+// the `LAST_STOPPED` lookup that made the reasoning-only leg read as a product
+// failure one run in three. Two extra facts pin the reading to THIS turn: the
+// live row must be newer than the row count observed before the submit
+// (`since`), and it must be the newest row, because a streaming turn is always
+// appended last. A stale row can no longer satisfy the wait by accident.
+const TURN_PROBE = (minLen, field, since) => `
+  var rows = document.querySelectorAll('#messages .msg');
+  var r = liveRow();
+  if (!r) return 0;
+  var i = Array.prototype.indexOf.call(rows, r);
+  if (i < ${since} || i !== rows.length - 1) return 0;
+  var el = r.querySelector(${JSON.stringify(field)});
+  var n = el ? el.textContent.length : 0;
+  return n > ${minLen} ? { len: n, index: i, rows: rows.length } : 0;
+`;
+
+// Wait for the turn submitted when the transcript held `since` rows to stream
+// past `minLen` in `field`. Returns the observed row and the margin the wait
+// actually had against its deadline — the number Phase 14 needed and the old
+// bare `waitFor` never reported.
+async function waitForTurn(win, since, minLen, field, label, timeoutMs = 20000) {
+  const started = Date.now();
+  const seen = await waitFor(
+    () => js(win, TURN_PROBE(minLen, field, since)),
+    label,
+    timeoutMs,
+    100,
+    () => js(win, TURN_STATE)
+  );
+  return { ...seen, since, waitedMs: Date.now() - started, timeoutMs };
 }
 
 // The tally, but only once the turn has finished unwinding: `waitFor` needs a
@@ -695,11 +773,9 @@ async function stopEdgesPhase(win) {
 
   // ── 1. a second press during teardown ───────────────────────────────────
   const before = await js(win, BUBBLE_TALLY);
+  const rowsBefore2 = await js(win, ROW_COUNT);
   const started = await js(win, startTurn('SMOKE: second turn, to be interrupted twice.'));
-  await waitFor(
-    () => js(win, 'var n = liveText().length; return n > 600 ? { len: n } : 0;'),
-    'the second turn to stream'
-  );
+  const streamed2 = await waitForTurn(win, rowsBefore2, 600, '.body', 'the second turn to stream');
   const cancelsBefore = CANCEL_COUNT();
   const pressed = await js(win, DOUBLE_ESCAPE);
   const settled = await waitFor(
@@ -761,9 +837,22 @@ async function stopEdgesPhase(win) {
   );
 
   // ── 3. the successor does not inherit the abort ─────────────────────────
+  const rowsBefore3 = await js(win, ROW_COUNT);
   out.successor = await js(win, startTurn('SMOKE: successor turn, must run clean.'));
-  await waitFor(
-    () => js(win, 'var n = liveText().length; return n > 1200 ? { len: n } : 0;'),
+  // Recorded before the wait, because "the submit was refused" and "the stream
+  // stalled" are different failures and the transcript alone cannot separate
+  // them: a refused submit leaves the previous turn's rows and nothing else.
+  check(
+    'successor-submit-accepted',
+    out.successor.sendDisabled === true,
+    `sendDisabled=${out.successor.sendDisabled} right after the successor submit — the composer ` +
+      `refused the turn, so nothing could stream`
+  );
+  const successorWait = await waitForTurn(
+    win,
+    rowsBefore3,
+    1200,
+    '.body',
     'the successor turn to stream'
   );
   // No press has happened on THIS turn. If the previous turn's stop leaked, it
@@ -808,9 +897,13 @@ async function stopEdgesPhase(win) {
   // deliberates and is interrupted before it ever writes an answer. Before
   // Phase 10 that produced a red "aborted" bubble and threw the deliberation
   // away; `salvageTurn` relabels it `reasoning only` and promotes the text.
+  const rowsBefore4 = await js(win, ROW_COUNT);
   await js(win, startTurn('SMOKE_REASON_ONLY: deliberate at length, answer nothing.'));
-  await waitFor(
-    () => js(win, 'var n = liveReasoning().length; return n > 600 ? { len: n } : 0;'),
+  const reasonedWait = await waitForTurn(
+    win,
+    rowsBefore4,
+    600,
+    '.reasoning',
     'the reasoning-only turn to stream deliberation'
   );
   const reasoningAtEscape = await js(win, 'return { len: liveReasoning().length, answer: liveText().length };');
@@ -974,15 +1067,18 @@ async function main() {
     'renderer boot (class picker)'
   );
 
+  const rowsBefore = await js(win, ROW_COUNT);
   const prepared = await js(win, PREPARE);
   check('turn-started', prepared.sendDisabled === true, `sendDisabled=${prepared.sendDisabled}`);
   check('class-is-cloud', prepared.cls === 'aegis', `class=${prepared.cls}`);
   check('discovery-lane-off', prepared.explore === false, `explore=${prepared.explore}`);
 
   // ── 1. stream until the transcript is long enough to scroll ──────────────
-  const streamed = await waitFor(
-    () =>
-      js(win, 'var n = liveText().length; return n > 3000 ? { len: n } : 0;'),
+  const streamed = await waitForTurn(
+    win,
+    rowsBefore,
+    3000,
+    '.body',
     'streamed text on the live turn'
   );
 
@@ -1147,6 +1243,17 @@ async function main() {
   return {
     prepared,
     streamedLen: streamed.len,
+    // Phase 14: how long each "the turn has streamed enough" wait actually
+    // took, against the 20s deadline it runs under. A wait that returns in a
+    // fraction of its budget is not close to timing out; without this number a
+    // timeout could not be told apart from a machine under load.
+    waits: {
+      primary: streamed.waitedMs,
+      doublePress: streamed2.waitedMs,
+      successor: successorWait.waitedMs,
+      reasoningOnly: reasonedWait.waitedMs,
+      deadlineMs: streamed.timeoutMs
+    },
     stopEdges,
     toolMarks,
     presetRepair,
