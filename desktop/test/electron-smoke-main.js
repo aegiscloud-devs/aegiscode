@@ -272,6 +272,241 @@ const DIAGNOSE = `
   };
 `;
 
+/**
+ * The third leg of the local-only endpoint policy (lib/local/endpoints.js).
+ *
+ * The policy refuses a remote base URL at two seams: the settings store (so the
+ * unusable row cannot be CREATED) and dispatch (so a row hand-edited onto disk
+ * cannot be DIALED). Neither seam can help a user who already has such a row —
+ * the class simply stops working, with no way out of the Settings pane, because
+ * saving a remote URL is exactly what is refused. That recovery is the
+ * renderer's job: clicking a Model-card preset on a BLOCKED class must REPLACE
+ * the refused URL. It is the one case applyCustomPreset() may overwrite a
+ * configured endpoint (see blockedCustomClasses); every other click must still
+ * refuse to clobber, or a stray preset click could silently repoint a working
+ * local server.
+ *
+ * Asserted in the REAL DOM, because the failure mode is a silent no-op:
+ * applyCustomPreset() returns early when its `row.querySelector('.setting-base')`
+ * lookup comes back empty, so a selector that drifted from buildSettingRow()'s
+ * markup would leave the row permanently unrepairable while every unit test
+ * stayed green. Only renderSettings()'s actual output can prove the two agree.
+ *
+ * The refused row is seeded through the settings FILE rather than the Settings
+ * pane — deliberately: the storage seam now refuses to write a remote URL, so a
+ * hand-edited settings.json IS the state under test. lib/settings.js re-reads
+ * the file on every get(), so the STORE sees this write immediately — but the
+ * settings PANE rows are only built by loadSettings(), which runs at boot and
+ * after a save, so the reload below is what puts the seeded URL into the field.
+ */
+async function presetRepairPhase(win) {
+  const fs = require('fs');
+  const path = require('path');
+
+  // A remote URL: refused by the policy. A local URL that no preset names, so
+  // the "never clobber" branch has something to preserve.
+  const REFUSED = 'https://api.z.ai/v1';
+  const REPAIR = 'http://127.0.0.1:11434/v1';
+  const KEPT = 'http://127.0.0.1:9999';
+
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) || {};
+  } catch {
+    /* first boot in this temp profile: nothing stored yet */
+  }
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify(
+      {
+        ...stored,
+        'openai-compat': { ...(stored['openai-compat'] || {}), baseURL: REFUSED },
+        anthropic: { ...(stored.anthropic || {}), baseURL: KEPT },
+      },
+      null,
+      2
+    ),
+    { mode: 0o600 }
+  );
+
+  // Reload THROUGH THE REAL BOOT PATH before touching anything.
+  //
+  // The rows in the Settings pane are rendered by loadSettings(), which runs at
+  // renderer boot and after a save — never on a file change. Writing
+  // settings.json behind a running app therefore leaves the pane displaying the
+  // STARTUP config, and that is not a cosmetic detail here: the branch under
+  // test reads the FIELD's value (`current: baseInput.value.trim()` in
+  // applyCustomPreset), so a stale row makes both subjects of this leg
+  // meaningless — the refused URL was never in the field, and neither was the
+  // endpoint the "never clobber" rule is supposed to protect. Reloading re-runs
+  // init() → loadSettings() against the seeded file, which IS the state a user
+  // who already has such a row boots into.
+  win.webContents.reload();
+  await waitFor(
+    () =>
+      js(
+        win,
+        "var s=document.getElementById('class-select'); return s && s.options.length > 0 ? s.options.length : 0;"
+      ),
+    'renderer reboot on the seeded settings'
+  );
+
+  const selectClass = (cls) =>
+    js(
+      win,
+      `var s = document.getElementById('class-select');
+       s.value = ${JSON.stringify(cls)};
+       s.dispatchEvent(new Event('change', { bubbles: true }));
+       return s.value;`
+    );
+
+  const READ = `
+    var cls = document.getElementById('class-select').value;
+    var row = document.querySelector('#settings-list .setting-row[data-provider="' + cls + '"]');
+    var base = row ? row.querySelector('.setting-base') : null;
+    var preset = document.getElementById('model-preset');
+    return {
+      cls: cls,
+      rowFound: Boolean(row),
+      baseValue: base ? base.value : null,
+      hint: document.getElementById('model-hint').textContent,
+      modelInput: document.getElementById('model-input').value,
+      presetOptions: Array.prototype.map.call(preset.options, function (o) { return o.value; }),
+    };
+  `;
+
+  // The real click: the preset <select>'s change handler is what calls
+  // applyCustomPreset() (app.js: `applyCustomPreset(els.classSelect.value,
+  // els.modelPreset.value)`), so setting the value and dispatching the event is
+  // the same path a user takes.
+  const clickPreset = (modelId) =>
+    js(
+      win,
+      `var p = document.getElementById('model-preset');
+       p.value = ${JSON.stringify(modelId)};
+       p.dispatchEvent(new Event('change', { bubbles: true }));
+       return p.value;`
+    );
+
+  // Polling that RETURNS the last state instead of throwing. A `waitFor`
+  // timeout here would report only "timed out", which is useless for a failure
+  // whose whole subject is WHICH of (row exists / row holds the refused URL /
+  // the reason reached the hint) came back wrong — so the checks below quote
+  // the observed state.
+  const pollUntil = async (pred, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let last = await js(win, READ);
+    while (!pred(last) && Date.now() < deadline) {
+      await sleep(100);
+      last = await js(win, READ);
+    }
+    return last;
+  };
+
+  // ── blocked class: the refused URL must be replaced ──────────────────────
+  const switched = await selectClass('openai-compat');
+  const classOptions = await js(
+    win,
+    `return Array.prototype.map.call(document.getElementById('class-select').options, function (o) { return o.value; });`
+  );
+  check(
+    'blocked-class-selectable',
+    switched === 'openai-compat',
+    `class picker did not accept openai-compat (options=${JSON.stringify(classOptions)}); ` +
+      `settings.json written to ${settingsPath}`
+  );
+
+  const blocked = await pollUntil(
+    (s) => s.rowFound && s.baseValue === REFUSED && /must be LOCAL/.test(s.hint),
+    8000
+  );
+
+  // The FIELD is asserted alongside the hint, not just the hint: the repair
+  // branch below is chosen from the field's value, so a row that rendered empty
+  // (the bug this phase first shipped with — a pane built before the seed) would
+  // reach that branch by accident and report a pass for the wrong reason.
+  check(
+    'blocked-row-is-visible-with-reason',
+    blocked.rowFound && blocked.baseValue === REFUSED && /must be LOCAL/.test(blocked.hint),
+    `seeded ${REFUSED}; the pane must SHOW it and explain the refusal. Observed ` +
+      `${JSON.stringify(blocked)} (settings.json at ${settingsPath}, ` +
+      `classes=${JSON.stringify(classOptions)})`
+  );
+  check(
+    'blocked-preset-offered',
+    Array.isArray(blocked.presetOptions) && blocked.presetOptions.includes('llama3.2'),
+    `a blocked class enumerates no models, so the quick-fill presets must still ` +
+      `be offered: options=${JSON.stringify(blocked.presetOptions)}`
+  );
+
+  const clicked = await clickPreset('llama3.2');
+  const repaired = await js(win, READ);
+  check('preset-click-applied', clicked === 'llama3.2', `preset select value=${JSON.stringify(clicked)}`);
+  check(
+    'preset-click-replaced-refused-url',
+    repaired.baseValue === REPAIR,
+    `clicking a preset on a blocked row must overwrite the refused URL ` +
+      `${REFUSED} with ${REPAIR} (got ${JSON.stringify(repaired.baseValue)}) — ` +
+      `otherwise the local-only policy leaves the class unfixable`
+  );
+  check(
+    'preset-click-filled-model-id',
+    repaired.modelInput === 'llama3.2',
+    `model id field=${JSON.stringify(repaired.modelInput)}`
+  );
+  check(
+    'preset-click-hint-names-the-repair',
+    /refused/.test(repaired.hint),
+    `the hint must say the refused endpoint was replaced: ${JSON.stringify(repaired.hint.slice(0, 200))}`
+  );
+
+  // ── working local row: the click must NOT clobber ────────────────────────
+  // The regression this guards: if the blocked exception were ever widened to
+  // every class (or every click), a preset click would repoint a working local
+  // server without asking. The row above proves the repair works; this proves
+  // it stays narrow.
+  await selectClass('anthropic');
+  const localRow = await pollUntil(
+    (s) => s.rowFound && s.baseValue === KEPT && !/must be LOCAL/.test(s.hint),
+    5000
+  );
+  // Precondition, asserted rather than assumed. Every branch of planPresetFill()
+  // is chosen from this field, so a row that displayed empty would take the
+  // "fill it in" branch and the two checks below would then be reporting on the
+  // wrong rule entirely (that is exactly how the first version of this phase
+  // passed its blocked leg and failed here).
+  check(
+    'local-row-shows-configured-endpoint',
+    localRow.rowFound && localRow.baseValue === KEPT,
+    `the pane must display the configured local endpoint ${KEPT} before the click; ` +
+      `observed ${JSON.stringify(localRow)}`
+  );
+
+  const localClicked = await clickPreset('local-model');
+  const afterLocal = await js(win, READ);
+  check(
+    'local-preset-click-applied',
+    localClicked === 'local-model',
+    `preset select value=${JSON.stringify(localClicked)}`
+  );
+  check(
+    'local-row-not-clobbered',
+    afterLocal.baseValue === KEPT,
+    `a preset click on a NON-blocked row must leave the configured endpoint ` +
+      `alone: expected ${KEPT}, got ${JSON.stringify(afterLocal.baseValue)}`
+  );
+  check(
+    'local-mismatch-hint-says-so',
+    /needs base URL/.test(afterLocal.hint),
+    `when the field disagrees with the preset the hint must say so instead of ` +
+      `writing: ${JSON.stringify(afterLocal.hint.slice(0, 200))}`
+  );
+
+  return { blocked, repaired, localRow, afterLocal, refused: REFUSED, repair: REPAIR, kept: KEPT };
+}
+
 async function main() {
   const win = await waitFor(
     () =>
@@ -459,9 +694,15 @@ async function main() {
       `(view showed ${escaped.textAtEscape} at the keystroke)`
   );
 
+  // The local-only endpoint policy's recovery leg. Runs LAST on purpose: it
+  // switches the class picker off Aegis Cloud, which the chat phase above
+  // depends on, and it rewrites settings.json behind the running app.
+  const presetRepair = await presetRepairPhase(win);
+
   return {
     prepared,
     streamedLen: streamed.len,
+    presetRepair,
     scrollUp,
     before,
     held,
