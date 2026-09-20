@@ -162,7 +162,7 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
       throw err;
     }
     if (!resolved.local) {
-      const err = new Error(custom.remoteRefusal(resolved.baseURL));
+      const err = new Error(custom.customRefusal(resolved.baseURL));
       err.status = 400;
       throw err;
     }

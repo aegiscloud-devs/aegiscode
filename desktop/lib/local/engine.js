@@ -45,6 +45,10 @@ const os = require('node:os');
 
 const toolsModule = require('./tools.js');
 const promptModule = require('./prompt.js');
+// The direct-dial policy: which base URLs may reach a provider transport, and
+// why a remote one is refused rather than metered. The same module the CLI
+// resolves (cli/src/custommodels.js), so both hosts answer with one rule.
+const { isLocalEndpoint, remoteRefusal } = require('./endpoints.js');
 const { ShellSession } = require('./shell.js');
 const { agentSystemPrompt, agentRoleLabel } = require('./agents.js');
 // Cooperative working-tree sharing (see each module's header). The lock
@@ -657,14 +661,26 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
    * a base URL is mandatory for both, and Anthropic additionally needs its own
    * key (the wire format authenticates with x-api-key). Reporting them as
    * always-ready made chat() POST to `${undefined}/v1/…` (defect #2).
+   *
+   * A stored REMOTE base URL is reported as not-configured rather than ready,
+   * plus `blocked` and the reason. This is the third face of the direct-dial
+   * gate (storage in settings.js set, dispatch in chat below): a row that
+   * predates the rule must not be OFFERED either, or the class list advertises
+   * a lane the turn then refuses. The reason travels so the UI can explain it
+   * instead of showing a dead row — and it is recoverable by design: saving a
+   * local URL (or clearing the field) makes the class usable again, which is
+   * what the refusal text tells the user to do.
    */
   function customStatus(cls) {
     const cfg = settings.get(cls) || {};
     const baseURL = typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
     const hasBase = Boolean(baseURL);
     const hasKey = Boolean(cfg.configured);
+    const blocked = hasBase && !isLocalEndpoint(baseURL);
     return {
-      configured: cls === 'anthropic' ? hasBase && hasKey : hasBase,
+      configured: !blocked && (cls === 'anthropic' ? hasBase && hasKey : hasBase),
+      blocked,
+      ...(blocked ? { blockedReason: remoteRefusal(baseURL, { subject: `the ${cls} endpoint` }) } : {}),
       baseURL,
       keyMask: cfg.keyMask || null,
     };
@@ -770,7 +786,18 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
     // along for display only.
     const cfg = settings.get(cls) || {};
     const baseURL = typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
-    return { class: cls, models: [], needsModelId: true, baseURL };
+    // Same reporting as customStatus: a stored remote URL is not a usable
+    // model list, and the reason has to reach the UI with it (see customStatus).
+    const blocked = Boolean(baseURL) && !isLocalEndpoint(baseURL);
+    return {
+      class: cls,
+      models: [],
+      needsModelId: true,
+      baseURL,
+      ...(blocked
+        ? { blocked: true, blockedReason: remoteRefusal(baseURL, { subject: `the ${cls} endpoint` }) }
+        : {}),
+    };
   }
 
   /**
@@ -1152,6 +1179,39 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
         );
         err.status = 401;
         throw err;
+      }
+
+      // THE DIRECT-DIAL GATE. A custom class talks to the user's base URL
+      // itself (providers.js openaiCompatible / anthropicMessages), and that
+      // transport bills NOBODY: no pooled margin, no BYOK handling fee, no
+      // account key attached. The only usage it may therefore carry is an
+      // endpoint on this machine, where there is no vendor to pay. A remote URL
+      // here is an unpaid turn, and it is refused rather than metered because
+      // there is nothing to meter it against — the relay accepts a fixed
+      // catalog of provider ids (services/nexus_provider/catalog.py), so an
+      // arbitrary remote URL cannot be billed there either.
+      //
+      // Checked at DISPATCH and not only at storage (settings.js set refuses
+      // the same URL): a row written before this rule existed, or hand-edited
+      // into settings.json, is still in the file, and reading it back happily
+      // would keep the lane open. Both seams, one rule — the message is
+      // endpoints.js's, so the desktop and the CLI say the same thing.
+      if (CUSTOM_CLASSES.includes(cls)) {
+        const raw = cfg && typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
+        if (raw && !isLocalEndpoint(raw)) {
+          const err = new Error(
+            remoteRefusal(raw, {
+              subject: `the ${cls} endpoint`,
+              hint:
+                'This class dials your URL directly and bills nobody, so it is local-only. ' +
+                'Use a model on this machine, or move the provider to the BYOK card (/class byok), ' +
+                'which relays through AEGIS and charges the handling fee.',
+            })
+          );
+          err.status = 400;
+          err.code = 'CUSTOM_ENDPOINT_NOT_LOCAL';
+          throw err;
+        }
       }
 
       // Custom classes carry no enumerable model list (see listModels), so a

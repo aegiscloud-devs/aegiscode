@@ -44,7 +44,7 @@ store.remove('openai');
 assert(store.get('openai').configured === false, 'remove clears the key');
 
 // key removal via set with undefined/null key
-store.set('anthropic', { baseURL: 'https://api.example.com', key: 'k2' });
+store.set('anthropic', { baseURL: 'http://127.0.0.1:11434', key: 'k2' });
 store.set('anthropic', { key: null });
 assert(store.get('anthropic').configured === false, 'null key clears config');
 
