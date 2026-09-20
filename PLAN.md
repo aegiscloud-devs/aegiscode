@@ -22,7 +22,7 @@ Status:
 - [x] Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
 - [x] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
 - [x] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
-- [ ] Phase 13 — CI unblock: self-hosted runner
+- [x] Phase 13 — CI unblock: self-hosted runner
 - [ ] Phase 14 — harness determinism: the successor-turn timeout
 
 ---
@@ -478,38 +478,82 @@ local runs above are the only verification that exists. See Phase 13.
 
 ---
 
-## Phase 13 — CI unblock: self-hosted runner
+## Phase 13 ✅ — CI unblock: self-hosted runner
 
-Scope. CI has been dead across at least the last four pushes and the failure is
-not code — it is a GitHub billing lock, so the jobs never start. Nothing is
-compiled, tested, or smoke-run remotely; every green result in Phases 8–12 is
+Scope. CI had been dead across at least the last four pushes and the failure was
+not code — it was a GitHub billing lock, so the jobs never start. Nothing was
+compiled, tested, or smoke-run remotely; every green result in Phases 8–12 was
 local only. Self-hosted runners are not billed, and
-`/home/neo/actions-runner-plugin/` already exists for exactly this purpose
+`/home/neo/actions-runner-plugin/` already existed for exactly this purpose
 (`bin/`, `config.sh`, `env.sh`, `externals/` are extracted) but was never
-registered — there is no `.runner` file, and
-`gh api repos/aegisinfo/aegiscode-plugin/actions/runners` returns
+registered — there was no `.runner` file, and
+`gh api repos/aegisinfo/aegiscode-plugin/actions/runners` returned
 `total_count: 0`.
 
-Exit criteria:
-- A self-hosted runner is registered against this repo and reports `online` via
-  `gh api repos/aegisinfo/aegiscode-plugin/actions/runners`.
-- `.github/workflows/ci.yml` selects it, and at least one full run of both jobs
-  (`check`-style and `electron-smoke`) completes green — a run that **starts**,
-  which is the thing the billing lock prevents today.
-- The smoke job still gets a display: the hosted job uses `xvfb-run`, which is
-  not installed here, so the self-hosted path must use the runner's own
-  `DISPLAY` (the harness already handles a pre-existing display).
-- The runner is a second independent check on the release: it must reproduce the
-  local `110 passed / 0 failed`, not merely exit 0.
+Outcome, all four exit criteria met:
 
-Open decision (must be locked before this phase runs): whether the runner should
-be repo-scoped (this repo only) or org-scoped, and whether it should be
-registered as a persistent service (`svc.sh install`) or run on demand.
+- **Runner online.** `aegis-plugin-local` (actions-runner v2.335.1) is registered
+  repo-scoped against `aegisinfo/aegiscode-plugin`, single supervised instance,
+  and reports `online` via the API. The agent name is deliberate: it is not
+  `/home/neo/actions-runner`, which is a *different* runner registered as agent
+  `neo` against `aegisinfo/ae-guix` and was left untouched.
+- **Both jobs complete green, on a self-hosted runner.** Run `35526452848` on
+  `d30ef8b`: `Validate wrapper` **success** (17/17 steps) and
+  `Headless Electron smoke (P3.6)` **success**. `Install xvfb` is `skipped`,
+  which is the self-hosted path taking the runner's own `DISPLAY` as designed.
+- **The billing lock is genuinely bypassed** — the fact that could not be
+  verified before. Run `35525622224` was the first GitHub job ever to *execute*
+  in this repo: it went `in_progress` on the runner instead of dying in 1–4s.
+  Routing is gated to `push` events only, via repo variable
+  `CI_RUNNER=["self-hosted"]`, because this repo is public and a PR from a fork
+  would otherwise execute untrusted code on the machine holding local
+  credentials. Unset the variable to revert to `ubuntu-latest`.
+- **The smoke job reproduces the local result**: `110 passed / 0 failed`, not
+  merely a zero exit code.
 
-Recorded context. `/home/neo/actions-runner/.runner` is a *different* runner,
-registered as agent `neo` against `aegisinfo/ae-guix`, not this repo. It must
-not be reconfigured — registration is destructive to an existing runner's
-identity.
+CI immediately found a real defect that local runs could never have seen. On a
+fresh checkout `test/cli-approval.test.mjs` died with `Cannot find module
+.../cli/vendor/desktop/lib/local/engine.js`. Both `cli/vendor/` and
+`desktop/vendor/` are **gitignored** (`.gitignore:8-9`, zero tracked files) and
+are staged only at publish time by each package's `predist` script — so a fresh
+checkout does not have them, and the local suite was green only because
+publishing 6.7.8 had left those trees staged on disk. Two further suites
+(`npm-update-channel`, `packaging`) failed on the same cause; CI aborts at the
+first failing test, so it never reached them. Fixed in `d30ef8b` by running both
+`predist` scripts as step 0 (pure fs copy + byte-equality verify — no network, no
+dependencies) and asserting the staged files exist.
+
+A second, quieter hole was found while fixing the first: the unit-test glob was
+`find test -name '*.test.mjs'`, which **cannot see** `desktop/test/*.test.mjs`.
+`deep-link` and `renderer-diff` therefore never ran in CI at all — the same
+"silently never ran" class the glob comment in that file already warns about.
+Both test roots are now listed explicitly and the orphan guard covers both. The
+CI log itself confirms **73 test files** executed, including both desktop-local
+suites, up from 71 discoverable before.
+
+Falsifiability. The staging fix was negative-controlled rather than assumed: on a
+pristine clone with the staging step omitted, the unit-test step exits **1**; with
+it, all 13 `validate` steps pass. The whole job sequence was replayed locally
+from the `run` blocks extracted out of `ci.yml` on a fresh `git clone`, so the
+pass is not an artifact of the working tree.
+
+Recorded corrections.
+
+- An earlier report claimed the runner was "not running" (`NO_RUNNER_PROC`). That
+  was a **bad `pgrep` pattern** — it matched `Runner.Worker|runner/Runner`
+  against a process that is really `Runner.Listener` — and acting on it spawned a
+  duplicate worker that then had to be killed. The runner had been online the
+  whole time.
+- The first reproduction used `git archive HEAD`, which has **no `.git`
+  directory**, so tests calling `git check-ignore` / `git ls-files` reported three
+  *false* failures (`cli-package` among them). A real `git clone` is the correct
+  reproduction and is what the numbers above come from.
+
+Carried forward, not fixed here. The runner is running **detached, not as a
+service**, so it dies on reboot and CI stops running silently. The scope/service
+decision the phase flagged is still open: repo-scoped was chosen, `svc.sh
+install` was deliberately not run because that is a system-level change.
+See Phase 14 for the remaining harness-flake work.
 
 ---
 
