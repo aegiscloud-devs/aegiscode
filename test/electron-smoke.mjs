@@ -54,6 +54,18 @@ const FAKE_KEY = 'aegis-smoke-test-only';
 const CHUNK_COUNT = 4000;
 const CHUNK_INTERVAL_MS = 25;
 
+// Every turn the driver drives, in order. The count is a contract, not a floor:
+// a leg that silently stops sending (a phase that never submits, a hook that
+// no longer fires) would otherwise pass on the primary stream's evidence, which
+// is exactly how the double-press leg could go quiet without anyone noticing.
+const STREAM_LEGS = [
+  'the P3.6 chat turn stopped once',
+  'the Phase 10 double-press turn',
+  'the Phase 10 successor turn',
+  'the Phase 10 reasoning-only turn',
+];
+const EXPECTED_STREAMS = STREAM_LEGS.length;
+
 const failures = [];
 const passes = [];
 
@@ -96,10 +108,17 @@ function startStubServer() {
     requests: {},
     chatStreams: 0,
     chunksSent: 0,
+    // The legacy scalars below describe the FIRST stream of the run — the P3.6
+    // turn the wrapper's original assertions were written against — and every
+    // later stream is recorded in `streams[]` instead. Phase 10's edges drive
+    // several further turns, so a single shared accumulator would make "was the
+    // answer cut short?" depend on whichever turn happened to settle last.
     fullText: '',
     aborted: false,
     completed: false,
     abortedAtChunk: -1,
+    streams: [],
+    reasoningText: '',
   };
 
   function json(res, body, status = 200) {
@@ -111,7 +130,21 @@ function startStubServer() {
     res.end(payload);
   }
 
-  function streamChat(req, res) {
+  function streamChat(req, res, body) {
+    const primary = state.streams.length === 0;
+    const rec = {
+      index: state.streams.length,
+      // Reasoning-only turns: the driver sends this marker in the prompt, and
+      // the frames carry `delta.reasoning_content` with no `delta.content` —
+      // deliberation that never became an answer, then interrupted.
+      reasoningOnly: /SMOKE_REASON_ONLY/.test(String(body || '')),
+      chunks: 0,
+      text: '',
+      aborted: false,
+      completed: false,
+      abortedAtChunk: -1,
+    };
+    state.streams.push(rec);
     state.chatStreams += 1;
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -128,8 +161,12 @@ function startStubServer() {
       // A close before the last chunk is the client aborting the fetch —
       // exactly what Escape must cause.
       if (i < CHUNK_COUNT) {
-        state.aborted = true;
-        state.abortedAtChunk = i;
+        rec.aborted = true;
+        rec.abortedAtChunk = i;
+        if (primary) {
+          state.aborted = true;
+          state.abortedAtChunk = i;
+        }
       }
     };
 
@@ -139,10 +176,11 @@ function startStubServer() {
         return;
       }
       const text = chunkText(i);
+      const delta = rec.reasoningOnly ? { reasoning_content: text } : { content: text };
       const frame = `data: ${JSON.stringify({
         id: 'chatcmpl-smoke',
         model: 'nexus-brain',
-        choices: [{ index: 0, delta: { content: text } }],
+        choices: [{ index: 0, delta }],
       })}\n\n`;
       try {
         res.write(frame);
@@ -150,8 +188,13 @@ function startStubServer() {
         stop();
         return;
       }
-      state.fullText += text;
-      state.chunksSent += 1;
+      rec.text += text;
+      rec.chunks += 1;
+      if (rec.reasoningOnly) state.reasoningText += text;
+      if (primary) {
+        state.fullText += text;
+        state.chunksSent += 1;
+      }
       i += 1;
       if (i >= CHUNK_COUNT) {
         try {
@@ -162,7 +205,8 @@ function startStubServer() {
         }
         clearInterval(timer);
         closed = true;
-        state.completed = true;
+        rec.completed = true;
+        if (primary) state.completed = true;
       }
     }, CHUNK_INTERVAL_MS);
 
@@ -192,7 +236,7 @@ function startStubServer() {
         return;
       }
       if (url.pathname === '/api/v1/chat/completions' && req.method === 'POST') {
-        streamChat(req, res);
+        streamChat(req, res, body);
         return;
       }
       // Everything else the renderer asks for at boot (status, token bank,
@@ -388,6 +432,24 @@ async function main() {
     'partial-not-whole',
     'session-meter-visible',
     'session-meter-counted',
+    // Phase 10 (P3.7): the abort path edges, each pinned by name so a leg that
+    // stops emitting is caught here rather than passing on the evidence of a
+    // different leg.
+    'double-press-both-consumed',
+    'double-press-one-bubble',
+    'double-press-cancelled-once',
+    'double-press-no-error',
+    'double-press-no-pending',
+    'stale-escape-inert',
+    'stale-escape-keeps-send',
+    'stale-escape-called-no-cancel',
+    'successor-runs-unstopped',
+    'successor-still-running',
+    'successor-stopped-by-its-own-press',
+    'successor-cancelled-once',
+    'reasoning-only-streamed-no-answer',
+    'reasoning-only-labelled',
+    'reasoning-only-not-empty',
   ];
   for (const name of expectedDriverChecks) {
     check(
@@ -412,8 +474,27 @@ async function main() {
   );
   check(
     'stub-was-used',
-    state.chatStreams === 1,
-    `chat streams through the stub: ${state.chatStreams}, paths: ${JSON.stringify(state.requests)}`
+    state.chatStreams === EXPECTED_STREAMS,
+    `chat streams through the stub: ${state.chatStreams} (expected ${EXPECTED_STREAMS} — ` +
+      `${STREAM_LEGS.join(', ')}), paths: ${JSON.stringify(state.requests)}`
+  );
+
+  // ── 2b. Phase 10's edges, told apart per turn ───────────────────────────
+  // Each leg gets its OWN record, so "the turn was interrupted" can be asserted
+  // for the turn it is about. A leg that silently stopped sending would leave a
+  // stream missing here rather than passing on the primary stream's evidence.
+  const legStreams = state.streams.slice(1);
+  check(
+    'every-extra-stream-aborted',
+    legStreams.length > 0 && legStreams.every((s) => s.aborted && !s.completed),
+    `extra stream(s): ${JSON.stringify(legStreams.map((s) => ({ i: s.index, aborted: s.aborted, at: s.abortedAtChunk, done: s.completed })))} — ` +
+      `each Phase 10 turn must be stopped by Escape, not left to finish`
+  );
+  check(
+    'reasoning-only-stream-carried-no-answer',
+    legStreams.some((s) => s.reasoningOnly) && state.reasoningText.length > 200,
+    `reasoning-only stream(s): ${legStreams.filter((s) => s.reasoningOnly).length}, ` +
+      `reasoning chars streamed: ${state.reasoningText.length}`
   );
 
   // ── 3. partial answer salvaged, honestly labelled ───────────────────────
