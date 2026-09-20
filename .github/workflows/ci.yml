@@ -34,6 +34,34 @@ jobs:
         with:
           node-version: 20
 
+      # --- 0. Stage vendored shared modules ----------------------------------
+      # `cli/vendor/` and `desktop/vendor/` are GITIGNORED (.gitignore:8-9, zero
+      # tracked files). They are the publish/build-time mirrors of the shared
+      # modules at the repo root, staged by `cli/scripts/predist.mjs` and
+      # `desktop/scripts/predist.mjs` via each package's `prepublishOnly`.
+      #
+      # So a fresh checkout DOES NOT HAVE THEM, and the tests that require from
+      # them fail here -- but pass on any developer machine where a publish or a
+      # `dist` has already staged them. That is exactly what happened: this job
+      # ran for the first time on 2026-09-20 (self-hosted runner; hosted minutes
+      # were billing-locked) and died at `test/cli-approval.test.mjs` with
+      # `Cannot find module .../cli/vendor/desktop/lib/local/engine.js`. The
+      # local suite was green only because publishing 6.7.8 had left the trees
+      # staged on disk. Both scripts are pure fs copy + byte-equality verify --
+      # no network, no dependencies -- so they are safe to run before `npm ci`.
+      #
+      # Running them first also means the syntax check below validates the
+      # STAGED output, i.e. the files that actually ship.
+      - name: Stage shared modules into vendor/ trees
+        run: |
+          set -euo pipefail
+          (cd cli && npm run predist)
+          (cd desktop && npm run predist)
+          # A silently-empty stage would reproduce the same bug one level down.
+          test -f cli/vendor/desktop/lib/local/engine.js
+          test -f desktop/vendor/aegis.js
+          echo "Staged vendor trees verified present."
+
       # --- 1. Syntax: every JS file must parse ------------------------------
       - name: Node syntax check
         run: |
@@ -168,10 +196,16 @@ jobs:
       # --- 5. Unit tests: every test/**/*.test.mjs ---------------------------
       # Discovered by glob rather than enumerated, so a new test file is picked
       # up automatically. Enumerating is how most of these silently never ran.
+      #
+      # The `desktop/test/` path was missing until 2026-09-20 and the omission
+      # was invisible: the old glob was `find test -name '*.test.mjs'`, which
+      # cannot see `desktop/test/*.test.mjs` at all, so `deep-link` and
+      # `renderer-diff` never ran in CI despite being real suites. Both dirs are
+      # listed explicitly here so adding a third one is a visible edit.
       - name: Unit tests
         run: |
           set -euo pipefail
-          mapfile -t files < <(find test -name '*.test.mjs' | sort)
+          mapfile -t files < <(find test desktop/test -name '*.test.mjs' | sort)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No test/**/*.test.mjs files found"
             exit 1
@@ -216,20 +250,31 @@ jobs:
           set -euo pipefail
           # Files run by their own explicit step (above/below) or their own job.
           explicit="smoke.mjs desktop-shell.mjs model-dispatch.mjs electron-smoke.mjs"
+          # Both test roots are guarded, not just the repo-root one: the old
+          # guard iterated `test/*.mjs` only, so a non-`*.test.mjs` file dropped
+          # into `desktop/test/` was invisible to BOTH the step-5 glob and this
+          # check. `desktop_explicit` is empty because every file there is
+          # currently `*.test.mjs` and therefore glob-matched.
+          desktop_explicit=""
           rc=0
-          for f in $(ls -1 test/*.mjs); do
-            base="$(basename "$f")"
-            case "$base" in
-              *.test.mjs) continue ;;
-            esac
-            found=0
-            for e in $explicit; do
-              [ "$base" = "$e" ] && found=1
+          for dir in test desktop/test; do
+            [ -d "$dir" ] || continue
+            for f in $(ls -1 "$dir"/*.mjs 2>/dev/null || true); do
+              base="$(basename "$f")"
+              case "$base" in
+                *.test.mjs) continue ;;
+              esac
+              list="$explicit"
+              [ "$dir" = "desktop/test" ] && list="$desktop_explicit"
+              found=0
+              for e in $list; do
+                [ "$base" = "$e" ] && found=1
+              done
+              if [ "$found" -eq 0 ]; then
+                echo "::error::$f is not named *.test.mjs and is not in the explicit-run list -- it would never run in CI"
+                rc=1
+              fi
             done
-            if [ "$found" -eq 0 ]; then
-              echo "::error::$f is not named *.test.mjs and is not in the explicit-run list -- it would never run in CI"
-              rc=1
-            fi
           done
           if [ "$rc" -ne 0 ]; then
             echo "Add it to an explicit step, or to the 'explicit' list in this guard once you have."
