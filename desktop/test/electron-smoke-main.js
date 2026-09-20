@@ -62,6 +62,29 @@ if (!Number.isFinite(COMPLETE_TEXT_LEN) || COMPLETE_TEXT_LEN <= 0) {
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 
+// ── cancel instrumentation (main process) ───────────────────────────────
+// Counting `models.cancel()` from the page is impossible: preload.js does
+// `contextBridge.exposeInMainWorld('models', Object.freeze(models))`, so the
+// bridge object and every method on it are non-writable and the context is
+// non-extensible. A page-level wrapper silently does not install, and the
+// counter then reads 0 forever — an assertion that can never fail. Instrument
+// the layer underneath instead: main.js destructures `createLocalEngine` at
+// load time and its `cancel` handler does a call-time `engine.cancel(...)`
+// lookup, so wrapping the factory BEFORE main.js is required intercepts the
+// real abort while leaving the page's frozen surface untouched.
+const engineModule = require('../lib/local/engine.js');
+const realCreateLocalEngine = engineModule.createLocalEngine;
+let engineCancelCount = 0;
+engineModule.createLocalEngine = function instrumentedCreateLocalEngine(...args) {
+  const engine = realCreateLocalEngine.apply(this, args);
+  const realCancel = engine.cancel;
+  engine.cancel = function countedCancel(...cancelArgs) {
+    engineCancelCount += 1;
+    return realCancel.apply(this, cancelArgs);
+  };
+  return engine;
+};
+
 // Boot the REAL host. main.js registers its own app.whenReady() handler and
 // creates the window there; ours below runs after it and waits for the window.
 require('../main.js');
@@ -125,6 +148,12 @@ const HELPERS = `
     if (!r) return '';
     var b = r.querySelector('.body');
     return b ? b.textContent : '';
+  }
+  function liveReasoning() {
+    var r = liveRow();
+    if (!r) return '';
+    var el = r.querySelector('.reasoning');
+    return el ? el.textContent : '';
   }
 `;
 
@@ -203,6 +232,91 @@ const ESCAPE = `
   document.dispatchEvent(ev);
   return { textAtEscape: lenBefore, defaultPrevented: ev.defaultPrevented };
 `;
+
+// Two keydowns in ONE evaluation, with no await between them: a genuine double
+// press, not two presses a polling interval apart. The detail returned is the
+// `defaultPrevented` of each, which is how "the second press still reached the
+// handler and was refused there" is told apart from "the second press never
+// got dispatched" — two very different failures.
+const DOUBLE_ESCAPE = `
+  var a = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  var b = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  document.dispatchEvent(a);
+  document.dispatchEvent(b);
+  return { first: a.defaultPrevented, second: b.defaultPrevented };
+`;
+
+// Start a turn through the real composer, like a user pressing Send. The class
+// is left alone: these legs run while Aegis Cloud is already selected.
+const startTurn = (prompt) => `
+  var out = {};
+  var explore = document.getElementById('explore-toggle');
+  if (explore && explore.checked) {
+    explore.checked = false;
+    explore.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  document.getElementById('prompt').value = ${JSON.stringify(prompt)};
+  document.getElementById('composer').requestSubmit();
+  out.sendDisabled = document.getElementById('send').disabled;
+  return out;
+`;
+
+// Every bubble the transcript is carrying, split by what its meta says. Counted
+// rather than sampled: the re-entrancy claims are all "exactly one more", and a
+// count is the only shape that can fail when a duplicate appears.
+const BUBBLE_TALLY = `
+  function tally(needle) {
+    var n = 0;
+    var rows = document.querySelectorAll('#messages .msg');
+    Array.prototype.forEach.call(rows, function (r) {
+      var m = r.querySelector('.meta');
+      if (m && m.textContent.indexOf(needle) !== -1) n += 1;
+    });
+    return n;
+  }
+  return {
+    stopped: tally('stopped by you'),
+    errors: tally('request failed'),
+    sendDisabled: document.getElementById('send').disabled
+  };
+`;
+
+// The LAST stopped bubble, with both halves of the honesty claim: the meta must
+// carry the label and the body must carry the surviving text. A bubble that is
+// labelled but empty is the exact defect the reasoning-only leg exists for.
+const LAST_STOPPED = `
+  var found = null;
+  var rows = document.querySelectorAll('#messages .msg');
+  Array.prototype.forEach.call(rows, function (r) {
+    var m = r.querySelector('.meta');
+    if (m && m.textContent.indexOf('stopped by you') !== -1) {
+      var b = r.querySelector('.body');
+      found = { meta: m.textContent, body: b ? b.textContent : '' };
+    }
+  });
+  return found;
+`;
+
+// The tally, but only once the turn has finished unwinding: `waitFor` needs a
+// falsy value to keep polling, and "Send is disabled" is the honest signal that
+// teardown is still in flight. Composed from BUBBLE_TALLY rather than re-stated
+// so the two can never drift apart.
+const SETTLED_TALLY = `
+  if (document.getElementById('send').disabled) return null;
+` + BUBBLE_TALLY;
+
+// Counts how many times the renderer actually asked the transport to abort.
+//
+// This exists because the DOM cannot see the difference the double-press leg
+// claims to be about: aborting an already-aborted controller is a no-op, so two
+// presses through the guard and two presses around it leave an identical
+// transcript. Measured directly instead: `window.models` is the same object
+// app.js closes over, and `models.cancel(...)` is a property lookup at call
+// time, so replacing it here intercepts the real call. One press that reached
+// the body increments once; a refused second press does not.
+// Reads the main-process counter installed above. This is a real measurement:
+// the wrapper sits on the engine the renderer's stop path actually reaches.
+const CANCEL_COUNT = () => engineCancelCount;
 
 const CAPTURE = `
   function bodyOf(row) {
@@ -528,6 +642,182 @@ async function presetRepairPhase(win) {
   return { blocked, repaired, localRow, afterLocal, refused: REFUSED, repair: REPAIR, kept: KEPT };
 }
 
+/**
+ * PLAN Phase 10 (P3.7) — the abort path's edges, driven in the real DOM.
+ *
+ * The phase above proves that ONE Escape stops ONE turn and salvages it. This
+ * phase proves the edges either side of that, which were previously only
+ * unit-tested on the pure decision (`stopAppliesTo`) and never observed in the
+ * app:
+ *
+ *   1. a second press while the first abort is still unwinding must be refused
+ *      (idempotent — one bubble, not two, and no error);
+ *   2. a press arriving after the turn already ended must be inert;
+ *   3. the turn after a stopped one must not inherit the abort (this is what
+ *      the old global `userStopped` flag broke: it stayed true, so the next
+ *      turn's genuine failure was relabelled "stopped by you" and its teardown
+ *      disarmed the successor);
+ *   4. a turn that streamed deliberation but no answer must still leave the
+ *      user with that text, labelled `reasoning only`, instead of an empty
+ *      bubble.
+ *
+ * Runs after the chat phase and before `presetRepairPhase`, which must stay
+ * last because it switches the class picker off Aegis Cloud.
+ */
+async function stopEdgesPhase(win) {
+  const out = {};
+
+  // ── 1. a second press during teardown ───────────────────────────────────
+  const before = await js(win, BUBBLE_TALLY);
+  const started = await js(win, startTurn('SMOKE: second turn, to be interrupted twice.'));
+  await waitFor(
+    () => js(win, 'var n = liveText().length; return n > 600 ? { len: n } : 0;'),
+    'the second turn to stream'
+  );
+  const cancelsBefore = CANCEL_COUNT();
+  const pressed = await js(win, DOUBLE_ESCAPE);
+  const settled = await waitFor(
+    () => js(win, SETTLED_TALLY),
+    'the doubly-pressed turn to settle'
+  );
+  const cancelsAfter = CANCEL_COUNT();
+
+  check(
+    'double-press-both-consumed',
+    pressed.first === true && pressed.second === true,
+    `defaultPrevented first=${pressed.first} second=${pressed.second} (both presses must reach the ` +
+      `interrupt handler — the second one is refused there, not dropped before it)`
+  );
+  check(
+    'double-press-cancelled-once',
+    cancelsAfter - cancelsBefore === 1,
+    `models.cancel ran ${cancelsAfter - cancelsBefore} time(s) across two Escape presses (expected 1) — ` +
+      `the second press re-entered the abort instead of being refused by the turn guard`
+  );
+  check(
+    'double-press-one-bubble',
+    settled.stopped === before.stopped + 1,
+    `stopped bubbles ${before.stopped} -> ${settled.stopped} after two Escape presses ` +
+      `(exactly one turn was interrupted; a second bubble means the abort re-entered)`
+  );
+  check(
+    'double-press-no-error',
+    settled.errors === before.errors,
+    `${settled.errors} "request failed" row(s) — a repeated stop must never render as an error`
+  );
+  check(
+    'double-press-no-pending',
+    (await js(win, BUBBLE_TALLY)).sendDisabled === false,
+    'Send is still disabled, so the turn never actually finished unwinding'
+  );
+
+  // ── 2. a press after the turn already ended ─────────────────────────────
+  await js(win, ESCAPE);
+  await sleep(400);
+  const stale = await js(win, BUBBLE_TALLY);
+  const staleCancels = CANCEL_COUNT();
+  check(
+    'stale-escape-inert',
+    stale.stopped === settled.stopped && stale.errors === settled.errors,
+    `a press with no running turn changed the transcript: stopped ${settled.stopped} -> ` +
+      `${stale.stopped}, errors ${settled.errors} -> ${stale.errors} (it must do nothing)`
+  );
+  check(
+    'stale-escape-called-no-cancel',
+    staleCancels === cancelsAfter,
+    `models.cancel ran ${staleCancels - cancelsAfter} time(s) with no running turn (expected 0) — ` +
+      `a press on nothing must be refused before it reaches the transport`
+  );
+  check(
+    'stale-escape-keeps-send',
+    stale.sendDisabled === false,
+    `sendDisabled=${stale.sendDisabled} after a no-op press`
+  );
+
+  // ── 3. the successor does not inherit the abort ─────────────────────────
+  out.successor = await js(win, startTurn('SMOKE: successor turn, must run clean.'));
+  await waitFor(
+    () => js(win, 'var n = liveText().length; return n > 1200 ? { len: n } : 0;'),
+    'the successor turn to stream'
+  );
+  // No press has happened on THIS turn. If the previous turn's stop leaked, it
+  // is either already labelled stopped, or it will die the moment the renderer
+  // unwinds it — so this is checked mid-stream, where "already stopped" is the
+  // only way it can show.
+  const midSuccessor = await js(win, BUBBLE_TALLY);
+  check(
+    'successor-runs-unstopped',
+    midSuccessor.stopped === settled.stopped,
+    `the successor reached 1200 chars but the transcript already shows ${midSuccessor.stopped} ` +
+      `stopped bubble(s) (expected ${settled.stopped}) — the stopped state leaked into the next turn`
+  );
+  check(
+    'successor-still-running',
+    midSuccessor.sendDisabled === true && midSuccessor.errors === settled.errors,
+    `sendDisabled=${midSuccessor.sendDisabled}, errors=${midSuccessor.errors} mid-successor`
+  );
+  const stoppedSuccessor = await js(win, ESCAPE);
+  const afterSuccessor = await waitFor(
+    () => js(win, SETTLED_TALLY),
+    'the successor to settle after its own single press'
+  );
+  const successorCancels = CANCEL_COUNT();
+  check(
+    'successor-cancelled-once',
+    successorCancels - staleCancels === 1,
+    `models.cancel ran ${successorCancels - staleCancels} time(s) for the successor turn ` +
+      `(expected 1) — a live successor must be stoppable, exactly once`
+  );
+  check(
+    'successor-stopped-by-its-own-press',
+    afterSuccessor.stopped === settled.stopped + 1,
+    `stopped bubbles ${settled.stopped} -> ${afterSuccessor.stopped} (a live successor must be ` +
+      `stoppable by exactly one press; stopped=${stoppedSuccessor.defaultPrevented})`
+  );
+  out.successorStopped = afterSuccessor.stopped;
+
+  // ── 4. reasoning-only salvage ───────────────────────────────────────────
+  // The stub keys off this marker in the request body and streams
+  // `delta.reasoning_content` with no `delta.content` at all — a turn that
+  // deliberates and is interrupted before it ever writes an answer. Before
+  // Phase 10 that produced a red "aborted" bubble and threw the deliberation
+  // away; `salvageTurn` relabels it `reasoning only` and promotes the text.
+  await js(win, startTurn('SMOKE_REASON_ONLY: deliberate at length, answer nothing.'));
+  await waitFor(
+    () => js(win, 'var n = liveReasoning().length; return n > 600 ? { len: n } : 0;'),
+    'the reasoning-only turn to stream deliberation'
+  );
+  const reasoningAtEscape = await js(win, 'return { len: liveReasoning().length, answer: liveText().length };');
+  await js(win, ESCAPE);
+  const reasoned = await waitFor(
+    () => js(win, LAST_STOPPED),
+    'the reasoning-only salvage bubble'
+  );
+  check(
+    'reasoning-only-streamed-no-answer',
+    reasoningAtEscape.len > 600 && reasoningAtEscape.answer === 0,
+    `at the keystroke: reasoning=${reasoningAtEscape.len} chars, answer=${reasoningAtEscape.answer} ` +
+      `(the answer body must be untouched, or this leg is not testing the reasoning-only path)`
+  );
+  check(
+    'reasoning-only-labelled',
+    reasoned && reasoned.meta.indexOf('reasoning only') !== -1,
+    `meta=${JSON.stringify(reasoned && reasoned.meta)} — a turn stopped with no answer text must say so`
+  );
+  check(
+    'reasoning-only-not-empty',
+    reasoned && norm(reasoned.body).length > 200,
+    `salvaged body=${reasoned ? norm(reasoned.body).length : 0} chars — the deliberation must survive ` +
+      `the stop instead of leaving an empty bubble`
+  );
+  out.reasoningOnly = {
+    meta: reasoned ? reasoned.meta : null,
+    bodyLength: reasoned ? norm(reasoned.body).length : 0,
+  };
+
+  return out;
+}
+
 async function main() {
   const win = await waitFor(
     () =>
@@ -715,6 +1005,10 @@ async function main() {
       `(view showed ${escaped.textAtEscape} at the keystroke)`
   );
 
+  // Phase 10's edges. Must run while Aegis Cloud is still selected, and before
+  // the preset phase below, which switches the class picker away from it.
+  const stopEdges = await stopEdgesPhase(win);
+
   // The local-only endpoint policy's recovery leg. Runs LAST on purpose: it
   // switches the class picker off Aegis Cloud, which the chat phase above
   // depends on, and it rewrites settings.json behind the running app.
@@ -723,6 +1017,7 @@ async function main() {
   return {
     prepared,
     streamedLen: streamed.len,
+    stopEdges,
     presetRepair,
     scrollUp,
     before,
