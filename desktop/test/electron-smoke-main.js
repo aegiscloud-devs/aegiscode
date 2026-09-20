@@ -30,6 +30,16 @@
 
 const { app, BrowserWindow } = require('electron');
 
+// The "this turn has streamed enough" probe lives in its own Electron-free
+// module so `test/turn-probe.test.mjs` can negative-control the SAME source
+// text this driver evaluates in the renderer. See desktop/test/turn-probe.js.
+const {
+  TURN_STATE,
+  ROW_COUNT,
+  TURN_PROBE,
+  wrap,
+} = require('./turn-probe.js');
+
 // ---------------------------------------------------------------------------
 // Safety rails — refuse to boot against anything that is not the local stub.
 // ---------------------------------------------------------------------------
@@ -133,7 +143,7 @@ async function waitFor(fn, label, timeoutMs = 20000, intervalMs = 100, observe =
 
 /** Run a function body inside the REAL renderer's world and return its value. */
 function js(win, body) {
-  return win.webContents.executeJavaScript(`(function(){${HELPERS}${body}})()`, true);
+  return win.webContents.executeJavaScript(wrap(body), true);
 }
 
 /** Whitespace-insensitive comparison form: markdown rendering rewraps text. */
@@ -141,60 +151,7 @@ function norm(s) {
   return String(s || '').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * How the driver finds the turn that is running right now.
- *
- * Not `.pending`: app.js clears that class on the first paint (`paintStream`
- * removes it so the typing dots stop), so mid-stream it is already gone. The
- * cancel button is the real marker — it exists for exactly as long as a
- * cancellable turn is in flight and disappears with the bubble when the turn
- * ends (`setBusy(false)` removes the whole row).
- */
-const HELPERS = `
-  function liveRow() {
-    var rows = document.querySelectorAll('#messages .msg');
-    var i;
-    for (i = 0; i < rows.length; i++) {
-      if (rows[i].querySelector('.cancel-btn')) return rows[i];
-    }
-    return null;
-  }
-  function liveText() {
-    var r = liveRow();
-    if (!r) return '';
-    var b = r.querySelector('.body');
-    return b ? b.textContent : '';
-  }
-  function liveReasoning() {
-    var r = liveRow();
-    if (!r) return '';
-    var el = r.querySelector('.reasoning');
-    return el ? el.textContent : '';
-  }
-`;
 
-// The transcript as `liveText()` sees it: every row, which one carries the
-// cancel button (so which one `liveRow()` picks), and how long each body is.
-// Passed as the `observe` probe to the waits that depend on the live row, so a
-// timeout names the row it was reading instead of just failing.
-const TURN_STATE = `
-  var rows = document.querySelectorAll('#messages .msg');
-  var out = { rows: [], live: -1, liveLen: liveText().length,
-              sendDisabled: document.getElementById('send').disabled };
-  Array.prototype.forEach.call(rows, function (r, i) {
-    var b = r.querySelector('.body');
-    var m = r.querySelector('.meta');
-    var c = r.querySelector('.cancel-btn');
-    if (c && out.live === -1) out.live = i;
-    out.rows.push({
-      i: i,
-      cancel: Boolean(c),
-      body: b ? b.textContent.length : -1,
-      meta: m ? m.textContent.slice(0, 40) : ''
-    });
-  });
-  return out;
-`;
 
 const PREPARE = `
   var out = {};
@@ -362,28 +319,6 @@ async function pollStopped(win, minCount, timeoutMs = 20000) {
   }
 }
 
-const ROW_COUNT = `return document.querySelectorAll('#messages .msg').length;`;
-
-// The anchor every "this turn has streamed enough" wait is built on.
-//
-// Length alone is not an anchor. `liveRow()` returns the FIRST row carrying a
-// cancel button, so a wait keyed only on `liveText().length > N` can be
-// satisfied by a row left over from an earlier leg — the same defect class as
-// the `LAST_STOPPED` lookup that made the reasoning-only leg read as a product
-// failure one run in three. Two extra facts pin the reading to THIS turn: the
-// live row must be newer than the row count observed before the submit
-// (`since`), and it must be the newest row, because a streaming turn is always
-// appended last. A stale row can no longer satisfy the wait by accident.
-const TURN_PROBE = (minLen, field, since) => `
-  var rows = document.querySelectorAll('#messages .msg');
-  var r = liveRow();
-  if (!r) return 0;
-  var i = Array.prototype.indexOf.call(rows, r);
-  if (i < ${since} || i !== rows.length - 1) return 0;
-  var el = r.querySelector(${JSON.stringify(field)});
-  var n = el ? el.textContent.length : 0;
-  return n > ${minLen} ? { len: n, index: i, rows: rows.length } : 0;
-`;
 
 // Wait for the turn submitted when the transcript held `since` rows to stream
 // past `minLen` in `field`. Returns the observed row and the margin the wait
@@ -399,6 +334,36 @@ async function waitForTurn(win, since, minLen, field, label, timeoutMs = 20000) 
     () => js(win, TURN_STATE)
   );
   return { ...seen, since, waitedMs: Date.now() - started, timeoutMs };
+}
+
+/**
+ * Phase 14: the anchor, asserted rather than assumed.
+ *
+ * Returning from a wait only means a row was found. What makes that row THIS
+ * turn's row is the pair `TURN_PROBE` enforces — index >= `since` (it did not
+ * exist before the submit) and index === rows-1 (a streaming turn is appended
+ * last). Recording the pair as a check is what turns "the successor wait gained
+ * an anchor" into something CI fails over: the numbers are read off the same
+ * probe evaluation that let the wait through, so a wait satisfied by a
+ * previous leg's leftover row cannot also be reported as anchored.
+ */
+function anchoredWait(name, w, turn) {
+  const anchoredOk = w.index >= w.since && w.index === w.rows - 1;
+  check(
+    name,
+    anchoredOk,
+    `the wait for ${turn} returned row ${w.index} of ${w.rows} (since=${w.since}, ` +
+      `len=${w.len}) — a row that existed before the submit, or one that is not the newest, ` +
+      `is a previous leg's state answering for this turn`
+  );
+  return {
+    index: w.index,
+    since: w.since,
+    rows: w.rows,
+    len: w.len,
+    waitedMs: w.waitedMs,
+    timeoutMs: w.timeoutMs,
+  };
 }
 
 // The tally, but only once the turn has finished unwinding: `waitFor` needs a
@@ -939,6 +904,18 @@ async function stopEdgesPhase(win) {
     bodyLength: norm(reasoned.body).length,
   };
 
+  // Phase 14: the margin and the anchor of each wait in THIS phase travel back
+  // with it. They used to be reached for from `main()` by name (`streamed2`,
+  // `successorWait`, `reasonedWait`), which are locals of this function — a
+  // ReferenceError that fired only at the end of the run, after every leg had
+  // executed, so the run looked like a driver failure with no failing check
+  // attached to it (`streamed2 is not defined`, 107 passed / 5 failed).
+  out.waits = {
+    doublePress: streamed2,
+    successor: successorWait,
+    reasoningOnly: reasonedWait,
+  };
+
   return out;
 }
 
@@ -1244,15 +1221,29 @@ async function main() {
     prepared,
     streamedLen: streamed.len,
     // Phase 14: how long each "the turn has streamed enough" wait actually
-    // took, against the 20s deadline it runs under. A wait that returns in a
+    // took, against the 20s deadline it runs under, plus the anchor each one
+    // was satisfied by (`row`/`since`/`rows`). A wait that returns in a
     // fraction of its budget is not close to timing out; without this number a
-    // timeout could not be told apart from a machine under load.
+    // timeout could not be told apart from a machine under load, and without
+    // the anchor the number would not say WHICH row produced it.
     waits: {
-      primary: streamed.waitedMs,
-      doublePress: streamed2.waitedMs,
-      successor: successorWait.waitedMs,
-      reasoningOnly: reasonedWait.waitedMs,
-      deadlineMs: streamed.timeoutMs
+      primary: anchoredWait('primary-wait-anchored', streamed, 'the primary chat turn'),
+      doublePress: anchoredWait(
+        'double-press-wait-anchored',
+        stopEdges.waits.doublePress,
+        'the doubly-pressed turn'
+      ),
+      successor: anchoredWait(
+        'successor-wait-anchored',
+        stopEdges.waits.successor,
+        'the successor turn'
+      ),
+      reasoningOnly: anchoredWait(
+        'reasoning-only-wait-anchored',
+        stopEdges.waits.reasoningOnly,
+        'the reasoning-only turn'
+      ),
+      deadlineMs: streamed.timeoutMs,
     },
     stopEdges,
     toolMarks,

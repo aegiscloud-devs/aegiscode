@@ -66,6 +66,20 @@ const STREAM_LEGS = [
 ];
 const EXPECTED_STREAMS = STREAM_LEGS.length;
 
+// Phase 14: deliberately reproduce a stalled leg.
+//
+//   AEGIS_SMOKE_STALL_STREAM=2 node test/electron-smoke.mjs
+//
+// The successor leg's timeout could not be reproduced on demand, which is why
+// it was never proven pre-existing. This makes the stall a switch: the stub for
+// stream #2 (the successor) sends a few chunks and then stops writing without
+// ending the response or closing the socket — a turn that started, streamed a
+// little, and hung. The driver's anchored wait then times out for real, and the
+// `observe` probe prints the transcript it was reading. Exit code 1 is the
+// expected outcome of this mode; the point is the failure text.
+const STALL_STREAM = process.env.AEGIS_SMOKE_STALL_STREAM;
+const STALL_AFTER_CHUNKS = Number(process.env.AEGIS_SMOKE_STALL_CHUNKS || 6);
+
 const failures = [];
 const passes = [];
 
@@ -170,9 +184,16 @@ function startStubServer() {
       }
     };
 
+    const stalled = STALL_STREAM !== undefined && String(rec.index) === String(STALL_STREAM);
     const timer = setInterval(() => {
       if (closed || res.writableEnded || res.destroyed) {
         stop();
+        return;
+      }
+      if (stalled && i >= STALL_AFTER_CHUNKS) {
+        // Stop writing, keep the response open: the client sees a live stream
+        // that has gone quiet, which is exactly the state the wait timed out in.
+        clearInterval(timer);
         return;
       }
       const text = chunkText(i);
@@ -285,7 +306,108 @@ function freePort() {
   });
 }
 
+/**
+ * Phase 14: measure the timeout margin across N consecutive runs.
+ *
+ *   AEGIS_SMOKE_REPEAT=8 node test/electron-smoke.mjs
+ *
+ * The driver reports how long each "this turn has streamed enough" wait took
+ * and which row it was satisfied by; one run of that is an anecdote, and the
+ * phase's question ("is one smoke run in four dying at the successor wait?")
+ * can only be answered by a distribution. This re-executes the whole harness
+ * N times — each child is a complete, independent run with its own stub server
+ * and its own temp config — prints the margins, and exits non-zero if any run
+ * fails. CI runs the default single iteration; the loop is opt-in.
+ */
+async function runRepeated(times) {
+  const self = fileURLToPath(import.meta.url);
+  const runs = [];
+  for (let i = 1; i <= times; i++) {
+    process.stdout.write(`\n── smoke run ${i}/${times} ──\n`);
+    const child = spawnSync(process.execPath, [self], {
+      cwd: path.join(HERE, '..'),
+      env: { ...process.env, AEGIS_SMOKE_REPEAT: '1' },
+      encoding: 'utf8',
+      timeout: 300000,
+    });
+    const out = String(child.stdout || '');
+    // `SMOKE_WAITS` is printed by this file (see `report`) — the driver's own
+    // SMOKE_EVIDENCE line is consumed one process down and never re-emitted.
+    const waitsLine = out.split('\n').find((l) => l.startsWith('SMOKE_WAITS '));
+    let waits = null;
+    if (waitsLine) {
+      try {
+        waits = JSON.parse(waitsLine.slice('SMOKE_WAITS '.length)).waits || null;
+      } catch (err) {
+        failures.push(`run ${i}: could not parse SMOKE_WAITS — ${err.message}`);
+      }
+    }
+    const ok = child.status === 0 && Boolean(waits);
+    if (!ok) {
+      failures.push(
+        `run ${i}: exit=${child.status}${waits ? '' : ' (no waits evidence)'} — the tail of its ` +
+          `output is above`
+      );
+      process.stdout.write(out.split('\n').slice(-25).join('\n') + '\n');
+    }
+    runs.push({ i, ok, waits });
+  }
+
+  const legs = ['primary', 'doublePress', 'successor', 'reasoningOnly'];
+  const deadline = (runs.find((r) => r.waits) || {}).waits?.deadlineMs || 20000;
+  console.log('\n── timeout margin across consecutive smoke runs (Phase 14) ──────');
+  console.log(
+    `  deadline per wait: ${deadline}ms\n` +
+      `  run  ` +
+      legs.map((l) => l.padEnd(24)).join('') +
+      '  (ms, and the row the anchor was satisfied by: row>=since, row=newest)'
+  );
+  const worst = {};
+  for (const r of runs) {
+    if (!r.waits) {
+      console.log(`  ${String(r.i).padStart(3)}  FAILED before reporting waits`);
+      continue;
+    }
+    console.log(
+      `  ${String(r.i).padStart(3)}  ` +
+        legs
+          .map((l) => {
+            const w = r.waits[l] || {};
+            const cell = `${w.waitedMs}ms row${w.index}>=${w.since}/${w.rows}`;
+            if (!worst[l] || w.waitedMs > worst[l].waitedMs) worst[l] = { ...w, run: r.i };
+            return cell.padEnd(24);
+          })
+          .join('') +
+        (r.ok ? '' : '  FAILED')
+    );
+  }
+  for (const l of legs) {
+    const w = worst[l];
+    if (!w) continue;
+    console.log(
+      `  worst ${l.padEnd(14)} ${String(w.waitedMs).padStart(6)}ms of ${deadline}ms ` +
+        `(margin ${deadline - w.waitedMs}ms, run ${w.run})`
+    );
+  }
+  const all = runs.filter((r) => r.waits).map((r) => r.waits.successor.waitedMs);
+  if (all.length) {
+    const sorted = [...all].sort((a, b) => a - b);
+    console.log(
+      `  successor wait across ${all.length} run(s): min ${sorted[0]}ms, median ` +
+        `${sorted[Math.floor(sorted.length / 2)]}ms, max ${sorted[sorted.length - 1]}ms`
+    );
+  }
+  console.log(
+    `\n  ${failures.length === 0 ? 'OK' : 'FAILED'} — ${runs.length} run(s), ` +
+      `${failures.length} failed\n`
+  );
+  process.exitCode = failures.length === 0 ? 0 : 1;
+}
+
 async function main() {
+  const repeat = Number(process.env.AEGIS_SMOKE_REPEAT || 1);
+  if (Number.isFinite(repeat) && repeat > 1) return runRepeated(repeat);
+
   const electronBin = resolveElectronBin();
   check(
     'electron-present',
@@ -447,6 +569,15 @@ async function main() {
     'successor-still-running',
     'successor-stopped-by-its-own-press',
     'successor-cancelled-once',
+    // Phase 14: each turn wait must report that it was satisfied by THIS
+    // turn's row (at or past the pre-submit row count, and the newest row), not
+    // by a leftover. Pinned by name so the anchor cannot be dropped from the
+    // probe without CI noticing — the same drift the successor wait itself
+    // suffered from.
+    'primary-wait-anchored',
+    'double-press-wait-anchored',
+    'successor-wait-anchored',
+    'reasoning-only-wait-anchored',
     // The reasoning-only leg waits for one more stopped bubble rather than for
     // a label, because three earlier legs already leave stopped bubbles behind
     // and a last-stopped lookup is truthy immediately. Pinned so that anchor
@@ -549,6 +680,37 @@ function report({ state, payload }) {
     console.log(
       `  interrupt:  Escape at ${e.escaped.textAtEscape} chars -> salvaged ` +
         `${e.settled.stoppedLength} chars labelled "stopped by you"; transport aborted=${state.aborted}`
+    );
+  }
+  if (payload && payload.evidence && payload.evidence.waits) {
+    // Phase 14: the timeout margin is a number on every run, so "the successor
+    // wait timed out" can never again be reported without saying how close it
+    // was or which row it was reading.
+    const w = payload.evidence.waits;
+    const deadline = w.deadlineMs;
+    const legs = ['primary', 'doublePress', 'successor', 'reasoningOnly'];
+    console.log(
+      `  waits:      ` +
+        legs
+          .map((l) => {
+            const leg = w[l] || {};
+            return (
+              `${l}=${leg.waitedMs}ms/${deadline} (row ${leg.index} of ${leg.rows}, ` +
+              `since ${leg.since}, ${leg.len} chars)`
+            );
+          })
+          .join('\n              ')
+    );
+  }
+  if (payload && payload.evidence && payload.evidence.waits) {
+    // The driver's SMOKE_EVIDENCE line is consumed by this wrapper and never
+    // re-printed, so `AEGIS_SMOKE_REPEAT` (which parses its children's stdout)
+    // needs its own line to read. One line, same numbers as the report above.
+    console.log(
+      `SMOKE_WAITS ${JSON.stringify({
+        ok: failures.length === 0 && payload.ok === true,
+        waits: payload.evidence.waits,
+      })}`
     );
   }
   console.log(
