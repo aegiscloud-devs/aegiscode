@@ -18,30 +18,15 @@
  * hosts would drift.
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 
-function roots() {
-  const srcDir = __dirname; // <root>/cli/src
-  const cliDir = path.join(srcDir, '..');
-  return [
-    path.join(srcDir, '..', '..'), // repo root (in-repo layout)
-    path.join(cliDir, 'vendor'), // staged tree (published layout)
-  ];
-}
-
-/** Resolve a repo-relative module path against whichever root has it. */
-function resolveShared(relPath) {
-  for (const root of roots()) {
-    const candidate = path.join(root, relPath);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    `aegiscode: cannot find ${relPath}. Expected it beside cli/ (in the repo) or ` +
-      'under cli/vendor/ (installed package). Reinstall the package, or run ' +
-      '`node scripts/predist.mjs` from cli/ if this is a source checkout.'
-  );
-}
+// Where the shared modules live, WITHOUT loading any of them. Kept in its own
+// module because this file eagerly requires everything it resolves, which makes
+// it unusable from inside the engine's own dependency graph (engine.js ->
+// custommodels.js -> deps.js -> engine.js is a cycle, and the cycle resolves to
+// `createLocalEngine === undefined`). src/custommodels.js needs to locate one
+// shared file and nothing more, so it goes through sharedpaths.js instead.
+const { roots, resolveShared } = require('./sharedpaths.js');
 
 const clientPath = resolveShared(path.join('client', 'aegis.js'));
 const toolsPath = resolveShared(path.join('mcp', 'tools.js'));

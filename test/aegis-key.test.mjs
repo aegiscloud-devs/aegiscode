@@ -37,6 +37,15 @@ const AEGIS_KEY = `aegis_${'x'.repeat(24)}`;
 const PROVIDER_KEY = `sk-${'p'.repeat(24)}`;
 const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
 
+// Custom endpoints are LOCAL-ONLY by policy (desktop/lib/local/endpoints.js):
+// providers.js dials a base URL directly and bills nothing, so only an endpoint
+// on this machine may use the free lane. Remote providers go to the billed
+// relaying classes (aegis / byok). These suites test the transport and the key
+// plumbing, which are unchanged — so they point at loopback, and the policy
+// itself is asserted in test/endpoints.test.mjs.
+const LOCAL_BASE = 'http://127.0.0.1:11434';
+const LOCAL_DIRECT = 'http://127.0.0.1:8080';
+
 // ---------------------------------------------------------------- defect #1
 {
   const dir = tmp('store');
@@ -45,7 +54,7 @@ const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
   assert(isReservedNamespace(AEGIS_KEY_NAMESPACE), 'AEGIS namespace is reserved');
 
   store.setAegisKey(AEGIS_KEY);
-  store.set('openai-compat', { baseURL: 'https://api.example.com', key: PROVIDER_KEY });
+  store.set('openai-compat', { baseURL: LOCAL_BASE, key: PROVIDER_KEY });
 
   const list = store.list();
   assert(list.length === 1, `list() shows provider configs only, got ${list.length}`);
@@ -87,7 +96,7 @@ const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
   const dir = tmp('ipc');
   const store = createSettingsStore({ dir });
   store.setAegisKey(AEGIS_KEY);
-  store.set('openai-compat', { baseURL: 'https://api.example.com', key: PROVIDER_KEY });
+  store.set('openai-compat', { baseURL: LOCAL_BASE, key: PROVIDER_KEY });
 
   const stub = () => ({ model: 'm', choices: [{ message: { content: 'ok' } }] });
   const engine = createLocalEngine({
@@ -165,11 +174,11 @@ const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
   assert(cls.ollama.configured === false, 'ollama reports the probe result');
 
   // A base URL alone makes an OpenAI-compatible endpoint usable…
-  settings.set('openai-compat', { baseURL: 'https://api.example.com' });
-  settings.set('anthropic', { baseURL: 'https://api.example.com' });
+  settings.set('openai-compat', { baseURL: LOCAL_BASE });
+  settings.set('anthropic', { baseURL: LOCAL_BASE });
   cls = await byClass(makeEngine());
   assert(cls['openai-compat'].configured === true, 'openai-compat with a base URL is configured');
-  assert(cls['openai-compat'].baseURL === 'https://api.example.com', 'base URL surfaced');
+  assert(cls['openai-compat'].baseURL === LOCAL_BASE, 'base URL surfaced');
   assert(cls.anthropic.configured === false, 'anthropic still needs its own key');
 
   // …while Anthropic needs base URL + key.
@@ -223,8 +232,8 @@ const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
 // ------------------------------------------- AEGIS key auth path by class
 {
   const settings = createSettingsStore({ dir: tmp('auth') });
-  settings.set('openai-compat', { baseURL: 'https://direct.example.com', key: PROVIDER_KEY });
-  settings.set('anthropic', { baseURL: 'https://direct.example.com', key: PROVIDER_KEY });
+  settings.set('openai-compat', { baseURL: LOCAL_DIRECT, key: PROVIDER_KEY });
+  settings.set('anthropic', { baseURL: LOCAL_DIRECT, key: PROVIDER_KEY });
   settings.setAegisKey(AEGIS_KEY);
 
   const seen = [];
@@ -297,7 +306,7 @@ const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
 
   const direct = seen.find((s) => s[0] === 'openai-compat')[1];
   assert(direct.apiKey === PROVIDER_KEY, 'custom OpenAI endpoint uses its own key');
-  assert(direct.baseURL === 'https://direct.example.com', 'custom OpenAI endpoint uses its own base URL');
+  assert(direct.baseURL === LOCAL_DIRECT, 'custom OpenAI endpoint uses its own base URL');
   assert(direct.apiKey !== AEGIS_KEY, 'the AEGIS key is never used for a custom endpoint');
   const anthropicCall = seen.find((s) => s[0] === 'anthropic')[1];
   assert(anthropicCall.apiKey === PROVIDER_KEY, 'anthropic class uses its own key');

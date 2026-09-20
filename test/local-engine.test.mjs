@@ -528,12 +528,12 @@ for (const cls of ['openai-compat', 'anthropic']) {
   };
 
   const cases = [
-    ['openai-compat', 'https://api.openai.com', 'https://api.openai.com/v1/chat/completions'],
-    ['openai-compat', 'https://api.openai.com/v1', 'https://api.openai.com/v1/chat/completions'],
-    ['openai-compat', 'https://api.openai.com/v1/', 'https://api.openai.com/v1/chat/completions'],
-    ['anthropic', 'https://api.anthropic.com', 'https://api.anthropic.com/v1/messages'],
-    ['anthropic', 'https://api.anthropic.com/v1', 'https://api.anthropic.com/v1/messages'],
-    ['anthropic', 'https://api.anthropic.com/v1/', 'https://api.anthropic.com/v1/messages'],
+    ['openai-compat', 'http://127.0.0.1:8000', 'http://127.0.0.1:8000/v1/chat/completions'],
+    ['openai-compat', 'http://127.0.0.1:8000/v1', 'http://127.0.0.1:8000/v1/chat/completions'],
+    ['openai-compat', 'http://127.0.0.1:8000/v1/', 'http://127.0.0.1:8000/v1/chat/completions'],
+    ['anthropic', 'http://127.0.0.1:8000', 'http://127.0.0.1:8000/v1/messages'],
+    ['anthropic', 'http://127.0.0.1:8000/v1', 'http://127.0.0.1:8000/v1/messages'],
+    ['anthropic', 'http://127.0.0.1:8000/v1/', 'http://127.0.0.1:8000/v1/messages'],
   ];
   for (const [cls, baseURL, expected] of cases) {
     const eng = createLocalEngine({
@@ -557,6 +557,47 @@ for (const cls of ['openai-compat', 'anthropic']) {
   });
   await eng.chat({ class: 'openai-compat', prompt: 'hi', model: '   ' }, () => {}).catch(() => {});
   assert(fetched.length === before, 'blank model id never reaches fetch()');
+
+  // ---- the direct-dial gate: a REMOTE base URL never reaches fetch() ------
+  //
+  // providers.js bills nobody — no pooled margin, no BYOK handling fee, no
+  // account key — so a custom class may only carry usage on this machine. The
+  // cases above moved to a loopback host for exactly this reason, and here the
+  // old remote spelling is asserted to be REFUSED before the transport is
+  // reached: the same engine, the same real providers module, zero fetch().
+  for (const [cls, baseURL] of [
+    ['openai-compat', 'https://api.openai.com/v1'],
+    ['anthropic', 'https://api.anthropic.com'],
+    ['openai-compat', 'http://192.168.1.50:1234/v1'], // private is local, sanity
+  ]) {
+    const wasLocal = cls === 'openai-compat' && baseURL.includes('192.168');
+    const gateEng = createLocalEngine({
+      aegis,
+      settings: { get: () => ({ baseURL, configured: true }), rawKey: () => 'k' },
+      ollama,
+      providers: realProviders,
+    });
+    const beforeGate = fetched.length;
+    if (wasLocal) {
+      await gateEng.chat({ class: cls, prompt: 'hi', model: 'm' }, () => {});
+      assert(fetched.length === beforeGate + 1, 'a private LAN address is served on the direct lane');
+      continue;
+    }
+    let err = null;
+    try {
+      await gateEng.chat({ class: cls, prompt: 'hi', model: 'm' }, () => {});
+    } catch (e) {
+      err = e;
+    }
+    assert(err, `${cls} "${baseURL}" must be refused`);
+    assert(err.code === 'CUSTOM_ENDPOINT_NOT_LOCAL', `${cls} refusal carries the policy code, got ${err.code}`);
+    assert(err.status === 400, `${cls} refusal is a 400-class error`);
+    assert(
+      String(err.message).includes(baseURL),
+      `${cls} refusal names the offending URL so the user can fix it`
+    );
+    assert(fetched.length === beforeGate, `${cls} remote base URL never reaches fetch()`);
+  }
   delete globalThis.fetch;
 }
 

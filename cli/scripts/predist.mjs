@@ -68,6 +68,15 @@ const FILES = [
   // base URL + key is called directly with the full tool loop — so this file
   // must ship. Pure node builtins (fetch), stages cleanly.
   'desktop/lib/local/providers.js',
+  // The direct-dial policy the transports above are gated by: which base URLs
+  // may reach them at all (local endpoints only — a remote one has nothing to
+  // bill against, see the module). BOTH hosts read it: the desktop engine and
+  // settings store require it relatively, and this package reaches it through
+  // src/sharedpaths.js from src/custommodels.js. Leaving it out of the staged
+  // tree is a MODULE_NOT_FOUND at CLI start-up — which is also why it must be
+  // listed before the settings store, whose `set()` refuses a remote URL for a
+  // direct-dial row (settings.js -> ./local/endpoints.js).
+  'desktop/lib/local/endpoints.js',
   // The provider-config store: one row per provider (base URL + key), and the
   // row the 'byok' class reads for a per-provider key. The CLI now selects that
   // class (src/engine.js), so it needs the same store the desktop writes —

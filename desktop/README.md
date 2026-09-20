@@ -25,8 +25,9 @@ Either way, on first launch:
 3. Pick a model class from the picker at the bottom of the composer.
 
 The published package is [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-on npm; this repo is its source. No AEGIS account is needed for the Ollama or
-custom-endpoint classes.
+on npm; this repo is its source. No AEGIS account is needed for the **Ollama**
+class or a **local** custom endpoint — every other class bills your AEGIS
+account, either the pooled margin or the BYOK handling fee.
 
 ## Using it
 
@@ -52,17 +53,18 @@ with **Settings → "Confirm before running tools"** — on by default.
 Pick any of five transports from the model-class picker, switchable
 mid-conversation with context intact:
 
-| Class | Transport | Key held in |
-|---|---|---|
-| **Aegis Cloud** | `aegiscloud.org` — one entry, **Nexus**; the pool auto-routes across whichever providers are live | main process |
-| **Ollama** | local `ollama` daemon | no key needed |
-| **Custom OpenAI-compatible** (LM Studio, OpenRouter, vLLM, …) | direct from the desktop app | main process — never sent to the renderer |
-| **Anthropic-compatible** (Claude, or any Messages-format gateway) | direct from the desktop app | main process |
-| **Bring your own key** | your provider key, relayed by AEGIS — see below | main process |
+| Class | Transport | Key held in | Billed? |
+|---|---|---|---|
+| **Aegis Cloud** | `aegiscloud.org` — one entry, **Nexus**; the pool auto-routes across whichever providers are live | main process | yes — pooled margin |
+| **Ollama** | local `ollama` daemon | no key needed | **no** — nothing leaves the machine |
+| **Custom OpenAI-compatible** (LM Studio, vLLM, llama.cpp, an Ollama shim) | direct from the desktop app, **local base URLs only** | main process — never sent to the renderer | **no** — free lane, local only |
+| **Anthropic-compatible** (a local Messages-format gateway — LiteLLM, claude-code-router) | direct from the desktop app, **local base URLs only** | main process | **no** — free lane, local only |
+| **Bring your own key** | your provider key, relayed by AEGIS — see below | main process | yes — flat AEGIS handling fee |
 
-Get a free AEGIS key at **https://aegiscloud.org**, or use your own
-Ollama/OpenAI-compatible/Anthropic-compatible endpoint — no AEGIS account
-needed for those.
+Get a free AEGIS key at **https://aegiscloud.org**. The two custom classes are
+free because aegiscode talks straight to an endpoint on your own machine; point
+one at a hosted provider instead and there is nothing for AEGIS to meter, so
+those models live on the **Bring your own key** class, which does bill.
 
 ### Bring your own key (BYOK)
 

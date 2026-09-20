@@ -165,48 +165,53 @@ const EXPLORE_KEY = 'aegis.explore';
 // is only billable/routable through the pooled AEGIS Cloud class.
 const AUTONOMOUS_CLASS = 'aegis';
 const CUSTOM_CLASSES = new Set(['openai-compat', 'anthropic']);
+// Custom classes currently holding a base URL the engine refuses (not local).
+// Tracked so the UI can explain the dead class, and so a preset click may
+// REPLACE the refused URL — applyCustomPreset otherwise never clobbers a
+// configured endpoint, which would leave a blocked row unfixable by click.
+const blockedCustomClasses = new Set();
 // Placeholders for the typed model-id field: custom endpoints enumerate
-// nothing, so the field has to say what a valid id looks like.
+// nothing, so the field has to say what a valid id looks like. The examples
+// are local-server ids — a hosted model id here would advertise a route this
+// class no longer has (see the preset note below).
 const MODEL_ID_PLACEHOLDER = {
-  'openai-compat': 'type a model id — e.g. gpt-4o-mini',
-  anthropic: 'type a model id — e.g. claude-sonnet-4-5',
+  'openai-compat': 'type a model id — e.g. llama3.2',
+  anthropic: 'type a model id — e.g. claude-3-5-sonnet',
 };
 // Quick-fill presets for the two custom-endpoint classes — model id + the
 // base URL it actually lives at, since typing the right model string is only
-// half the problem (the wrong base URL 400s just as hard). Base URLs and
-// default model ids match aegis1 services/nexus_provider/catalog.py exactly:
-// DeepSeek is served via Anthropic-Messages transport, Gemini via
-// OpenAI-chat transport — that is why each shows up under the *other*
-// custom class from what its own name suggests.
+// half the problem (the wrong base URL 400s just as hard).
+//
+// EVERY base URL HERE IS LOCAL, AND THAT IS THE POLICY, NOT AN OMISSION.
+// These two classes are the free direct lane: aegiscode dials the base URL
+// itself, so a remote one would be a model nobody bills. desktop/lib/local/
+// endpoints.js refuses a non-local base URL for both of them, at the settings
+// store (so the row cannot be created) and again at dispatch (so a row hand
+// edited onto disk cannot be dialed). The hosted providers that used to be
+// listed here — OpenAI, Anthropic, Gemini, and DeepSeek (whose live ids,
+// served over DeepSeek's Anthropic-Messages transport, are `deepseek-flash`
+// and `deepseek-v4-pro`) — are all in the relay's BYOK catalog, so their
+// correct home is now the **Bring your own key** class, which bills the flat
+// handling fee. Adding one back here would revive a route that is refused on
+// save.
+//
+// The two transports stay distinct because wire format is not inferable from
+// a local URL: `openai-compat` posts /chat/completions, `anthropic` posts the
+// Messages API. A given local server answers one of them, so pick the class
+// that matches what it serves. A preset's model id is what gets pinned, and
+// for a local server that id is whatever *you* loaded — the ids below are the
+// servers' own conventional defaults, and the field still invites your own.
 const CUSTOM_MODEL_PRESETS = {
   'openai-compat': [
-    { label: 'OpenAI — gpt-4o-mini', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-    { label: 'OpenAI — gpt-4o', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o' },
-    {
-      label: 'Gemini — 3.5 Flash',
-      baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-      model: 'gemini-3.5-flash',
-    },
+    { label: 'Ollama (OpenAI-compatible shim)', baseURL: 'http://127.0.0.1:11434/v1', model: 'llama3.2' },
+    { label: 'LM Studio', baseURL: 'http://127.0.0.1:1234/v1', model: 'local-model' },
+    { label: 'vLLM', baseURL: 'http://127.0.0.1:8000/v1', model: 'local-model' },
+    { label: 'llama.cpp', baseURL: 'http://127.0.0.1:8080/v1', model: 'local-model' },
   ],
   anthropic: [
-    { label: 'Anthropic — Claude Sonnet 5', baseURL: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5' },
-    { label: 'Anthropic — Claude Haiku 4.5', baseURL: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-5' },
-    // DeepSeek's live API serves exactly two ids (verified against
-    // GET https://api.deepseek.com/v1/models): `deepseek-flash` — the current
-    // generation, which DeepSeek calls "Flash 4.1" — and the slow tier
-    // `deepseek-v4-pro`, retired 2026-09-14 and now served as 4.1 too. The
-    // preset that used to sit here, `deepseek-v4-flash`, is a *legacy alias*
-    // DeepSeek keeps alive only for configs already carrying it, so the picker
-    // was advertising a previous generation by its dead id. Ids and labels
-    // match aegiscodex-dev src/models.js; the base URL is DeepSeek's
-    // Anthropic-Messages transport (aegis1 services/nexus_provider/catalog.py
-    // DEEPSEEK_DEFAULT_BASE), which is why these two sit under this class and
-    // not the OpenAI-compatible one. Both ids are reasoning models: the token
-    // budget for them is the Effort rung, never a stated number (they bill
-    // hidden chain-of-thought against the same budget as the answer — see
-    // budget.js).
-    { label: 'DeepSeek — Flash 4.1', baseURL: 'https://api.deepseek.com/anthropic', model: 'deepseek-flash' },
-    { label: 'DeepSeek — V4 Pro (retired → 4.1)', baseURL: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro' },
+    // Anything local that speaks the Anthropic Messages API — a LiteLLM
+    // proxy, claude-code-router, or a gateway on your own LAN.
+    { label: 'LiteLLM proxy (Messages API)', baseURL: 'http://127.0.0.1:4000', model: 'local-model' },
   ],
 };
 // The in-app AEGIS key is stored in a reserved namespace the main process
@@ -2571,9 +2576,25 @@ async function loadModels(cls) {
     // `model: "<url>"` and 400'd upstream). `needsModelId` is what turns this
     // into an explicit "type a model id" prompt rather than an empty picker.
     let needsModelId = true;
+    // A row whose stored base URL is not local is refused by the engine — at
+    // storage, at dispatch, and here. This is the here: without the reason the
+    // class just looks armed and then fails on send, so capture it from the
+    // same call that reports `needsModelId` and show it in place of the
+    // endpoint line. It is recoverable by design — the text says how.
+    let blockedReason = '';
     try {
       const data = await models.listModels(cls);
       if (data && typeof data.needsModelId === 'boolean') needsModelId = data.needsModelId;
+      if (data && typeof data.blockedReason === 'string' && data.blockedReason) {
+        blockedReason = data.blockedReason;
+      }
+      // Track the refusal against the class itself: applyCustomPreset() reads
+      // this set to know that the row's stored endpoint is dead and may be
+      // replaced by a click. A class that lists without a reason is cleared
+      // again, so the replacement exception never widens past rows the engine
+      // is actually refusing.
+      if (blockedReason) blockedCustomClasses.add(cls);
+      else blockedCustomClasses.delete(cls);
       if (data && typeof data.baseURL === 'string' && data.baseURL) {
         cfg = { ...cfg, baseURL: data.baseURL };
       }
@@ -2622,10 +2643,12 @@ async function loadModels(cls) {
     els.modelInput.placeholder = needsModelId
       ? MODEL_ID_PLACEHOLDER[cls] || 'type a model id'
       : 'model id';
-    els.modelHint.textContent = cfg.baseURL
-      ? `endpoint: ${cfg.baseURL} · key: ${cfg.configured ? cfg.keyMask : 'not set'}` +
-        (needsModelId ? ' · type a model id above' : '')
-      : 'Set base URL + key in Provider settings, then type a model id.';
+    els.modelHint.textContent = blockedReason
+      ? blockedReason
+      : cfg.baseURL
+        ? `endpoint: ${cfg.baseURL} · key: ${cfg.configured ? cfg.keyMask : 'not set'}` +
+          (needsModelId ? ' · type a model id above' : '')
+        : 'Set base URL + key in Provider settings, then type a model id.';
     return;
   }
 
@@ -2709,6 +2732,12 @@ async function loadModels(cls) {
  * already-configured base URL is left alone (never silently overwritten) —
  * if it doesn't match what the preset expects, the hint says so instead, so
  * the user's own custom endpoint can't be clobbered by a stray click.
+ *
+ * The one exception is a BLOCKED row: when the engine refuses the stored
+ * endpoint (non-local — see blockedCustomClasses), there is nothing left to
+ * preserve, so the preset URL overwrites the field unconditionally. Without
+ * that, the local-only policy would leave the row unfixable by click; the
+ * hint then tells the user to Save so the replacement is actually stored.
  */
 function applyCustomPreset(cls, modelId) {
   const preset = (CUSTOM_MODEL_PRESETS[cls] || []).find((p) => p.model === modelId);
@@ -2723,7 +2752,14 @@ function applyCustomPreset(cls, modelId) {
   const baseInput = row && row.querySelector('.setting-base');
   if (!baseInput) return;
   const current = baseInput.value.trim();
-  if (!current) {
+  if (blockedCustomClasses.has(cls)) {
+    // Blocked row: the stored endpoint is refused, so the never-clobber rule
+    // above does not apply — replace it outright and say what to do next.
+    baseInput.value = preset.baseURL;
+    els.modelHint.textContent =
+      `stored endpoint refused — replaced with ${preset.baseURL}; ` +
+      'click Save in Provider settings to replace the refused endpoint.';
+  } else if (!current) {
     baseInput.value = preset.baseURL;
     els.modelHint.textContent = `filled in — click Save in Provider settings below to store the ${preset.label} endpoint.`;
   } else if (current !== preset.baseURL) {
@@ -2887,6 +2923,10 @@ async function saveSetting(provider, baseURL, key) {
     const cfg = { baseURL };
     if (key) cfg.key = key;
     await models.settings.set(provider, cfg);
+    // Stored: whatever the engine refused is gone, so drop the blocked mark
+    // and let loadModels() below re-establish it from the fresh refusal (if
+    // any). Replacing a refused endpoint is exactly what unblocks the row.
+    blockedCustomClasses.delete(provider);
     els.settingsHint.textContent = 'saved.';
     await loadSettings();
     await loadModels(els.classSelect.value);
@@ -2900,6 +2940,8 @@ async function removeSetting(provider) {
   els.settingsHint.textContent = 'removing…';
   try {
     await models.settings.remove(provider);
+    // Nothing stored means nothing to refuse; clear the blocked mark too.
+    blockedCustomClasses.delete(provider);
     els.settingsHint.textContent = 'removed.';
     await loadSettings();
     await loadModels(els.classSelect.value);

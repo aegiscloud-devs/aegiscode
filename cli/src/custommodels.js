@@ -39,93 +39,39 @@
  */
 
 const { loadConfig, updateConfig } = require('./config.js');
+// The direct-dial policy, from the ONE implementation both hosts share
+// (desktop/lib/local/endpoints.js). Resolved by path rather than required
+// relatively because the CLI consumes desktop/lib/ in two layouts — beside cli/
+// in the repo, and under cli/vendor/ in an installed package (src/deps.js
+// documents both); sharedpaths.js is that resolution with no side effects, and
+// it exists separately precisely so this module can reach the policy WITHOUT
+// pulling in the engine (custommodels -> deps -> engine -> custommodels is a
+// require cycle, and the cycle resolves to a half-built exports object).
+//
+// One implementation on purpose: a second copy is how the desktop would keep
+// refusing remote endpoints while the terminal quietly served them — the exact
+// drift that produces an unpaid turn.
+const { hostOf, isLocalEndpoint, remoteRefusal } = require(
+  require('./sharedpaths.js').resolveShared(require('node:path').join('desktop', 'lib', 'local', 'endpoints.js'))
+);
 
 /** The settings-store row a custom model's key lives in. */
 function customNamespace(id) {
   return `custom:${id}`;
 }
 
-/** Host of a URL, lower-cased, or '' if it does not parse. */
-function hostOf(url) {
-  try {
-    return new URL(String(url)).host.toLowerCase();
-  } catch {
-    return '';
-  }
-}
+// `hostOf`, `isLocalEndpoint` and `remoteRefusal` come from the shared policy
+// module above (see the require for why it is reached by path). The CLI's
+// refusal text is that module's, plus the one thing only the CLI can name: the
+// command that moves the user onto the billed lane. Previously this file held
+// its own copy of all three, which is how the two hosts would have drifted.
+const CLI_REMOTE_HINT =
+  'Remote providers are billed, so use /class byok with /byok-key <provider> ' +
+  '(the AEGIS relay charges the handling fee there), or point this entry at a local address.';
 
-/**
- * Whether a base URL addresses an endpoint on this machine — the gate that
- * decides whether the free direct lane is available at all.
- *
- * True for: loopback (localhost, `*.localhost`, 127.0.0.0/8, `::1`), RFC1918
- * private ranges (10/8, 172.16/12, 192.168/16), IPv6 unique-local fc00::/7,
- * link-local (169.254/16, fe80::/10), the reserved local suffixes `.local`,
- * `.internal`, `.lan`, and a bare dotless hostname (`ollama`, `gpu-box` — it
- * can only resolve through this machine's own resolver).
- *
- * FAIL CLOSED: anything that does not parse, carries no host, is a public
- * address or name, or is merely ambiguous is NOT local. That direction is the
- * whole point — a false "local" is an unpaid turn, a false "remote" is a
- * refusal the user can fix by pointing at a local address or by moving to
- * /class byok, which bills.
- */
-function isLocalEndpoint(url) {
-  let host = '';
-  try {
-    host = new URL(String(url == null ? '' : url)).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  if (!host) return false;
-  // WHATWG keeps the brackets on an IPv6 hostname; strip them so one spelling
-  // covers both `[::1]` and a bare `::1`.
-  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-  if (!host || /[\s/\\@]/.test(host)) return false;
-
-  // Loopback by name, plus the reserved local suffixes. `.local`/`.internal`/
-  // `.lan` are the mDNS / split-DNS names an on-box service answers to.
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (/\.(local|internal|lan)$/.test(host)) return true;
-
-  // IPv6 literals.
-  if (host.includes(':')) {
-    if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true; // loopback
-    if (/^f[cd][0-9a-f]{2}:/.test(host)) return true; // fc00::/7 unique-local
-    if (/^fe[89ab][0-9a-f]:/.test(host)) return true; // fe80::/10 link-local
-    return false;
-  }
-
-  // IPv4 literals.
-  const quad = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (quad) {
-    const o = quad.slice(1).map(Number);
-    if (o.some((n) => n > 255)) return false; // not an address, and not local
-    const [a, b] = o;
-    if (a === 127) return true; // 127.0.0.0/8 loopback
-    if (a === 10) return true; // 10.0.0.0/8
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
-    return false; // a real, routable address — remote, and billed
-  }
-
-  // A bare, dotless hostname is local by convention (`ollama`, `llama-box`).
-  // Anything with a dot is a DNS name for somebody else's machine.
-  return !host.includes('.');
-}
-
-/**
- * The one refusal a non-local custom endpoint gets, in the words the user needs
- * to act on: it names the offending URL, the kind of address that IS allowed,
- * and the billed lane that replaces this one. Shared by the add/validation
- * seam and the dispatch gate so both surfaces cannot drift apart.
- */
-function remoteRefusal(baseURL) {
-  return `custom endpoints must be LOCAL — remote base URL ${JSON.stringify(String(baseURL == null ? '' : baseURL))} is not offered on this lane. ` +
-    'Allowed: localhost, 127.0.0.1, a private/LAN address (10.x, 172.16-31.x, 192.168.x), *.local/.internal/.lan, or a dotless host like "ollama". ' +
-    'Remote providers are billed, so use /class byok with /byok-key <provider> (the AEGIS relay charges the handling fee there), ' +
-    'or point this entry at a local address.';
+/** The refusal a remote custom endpoint gets here, in the CLI's own words. */
+function customRefusal(baseURL) {
+  return remoteRefusal(baseURL, { subject: 'custom endpoints', hint: CLI_REMOTE_HINT });
 }
 
 /**
@@ -177,7 +123,7 @@ function normalizeEntry({ id, name, model, baseURL, wire } = {}) {
   }
   if (!cleanWire) cleanWire = inferWire(cleanBase);
 
-  if (!isLocalEndpoint(cleanBase)) return { error: remoteRefusal(cleanBase) };
+  if (!isLocalEndpoint(cleanBase)) return { error: customRefusal(cleanBase) };
 
   const cleanName = String(name == null ? '' : name).trim() || cleanId;
   return { entry: { id: cleanId, name: cleanName, model: cleanModel, baseURL: cleanBase, wire: cleanWire } };
@@ -299,6 +245,7 @@ module.exports = {
   inferWire,
   isLocalEndpoint,
   remoteRefusal,
+  customRefusal,
   normalizeEntry,
   getCustom,
   listCustomModels,
