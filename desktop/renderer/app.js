@@ -427,12 +427,17 @@ function abortBranches() {
 // instead of only as pure math in stream-policy.js.
 
 /**
- * Set when the user asks the running turn to stop. The abort comes back as a
- * rejected IPC call, which does not preserve `err.name`, so this flag — not an
- * AbortError check — is what distinguishes a stop the user asked for from a
- * genuine failure.
+ * Turn identity, for the stop path. `turnSeq` is monotonic and never reset;
+ * `runningTurn` is the token of the turn in progress (null when idle) and
+ * `stoppedTurn` the token already asked to stop. The abort is not
+ * instantaneous, so a second Escape lands while the first turn still looks
+ * running — comparing tokens (see `stopAppliesTo`) is what keeps that second
+ * press from re-entering, and what stops a held key's repeats from reaching the
+ * *next* turn once this one has ended.
  */
-let userStopped = false;
+let turnSeq = 0;
+let runningTurn = null;
+let stoppedTurn = null;
 
 /**
  * Transcript policy, created by init(): the reader's scroll veto, the
@@ -466,9 +471,16 @@ function rafPainter(paint) {
  */
 function stopPendingTurn() {
   if (!pendingSessionId) return false;
+  // Idempotent, and scoped to the turn that is actually running: a second press
+  // during teardown is the same intent (`stopAppliesTo` returns false and
+  // nothing is re-entered). A held key's repeats are refused earlier, by the
+  // `e.repeat` guard in transcript-view.js.
+  if (!stopAppliesTo(runningTurn, stoppedTurn)) return false;
   // Recorded before the abort lands: `send()`'s catch reads it to tell a
-  // deliberate stop from a real error.
-  userStopped = true;
+  // deliberate stop from a real error. Scoped to this one turn — a global flag
+  // could be left `true` by an earlier turn and make an unrelated transport
+  // failure look like a stop the user asked for.
+  stoppedTurn = runningTurn;
   try {
     models.cancel(pendingSessionId);
   } catch {
@@ -2324,8 +2336,11 @@ function captureDiffPreview(tool) {
  * already ran, so this is a retrospective log line, not a live spinner.
  */
 function toolActivityLabel(tool) {
-  const { name, args, ok } = tool || {};
-  const mark = ok === false ? '✗' : '✓';
+  const { name, args } = tool || {};
+  // The glyph is `toolMark`'s decision, not `ok === false ? '✗' : '✓'`: a call
+  // whose result never arrived (aborted between call and result) used to draw
+  // as ✓, claiming success for work this turn never finished.
+  const mark = toolMark(tool);
   const a = args || {};
   if (name === 'task') {
     const kind = a.subagent_type && a.subagent_type !== 'general' ? a.subagent_type : 'general';
@@ -3173,6 +3188,11 @@ function newChat() {
   els.sessionsHint.textContent = '';
   pendingEl = null;
   pendingSessionId = null;
+  // A new thread owns no turn: dropping the running token here means any
+  // in-flight `send()` whose teardown has not run yet can no longer match
+  // itself (see the `finally` guard) and cannot clear this thread's state.
+  runningTurn = null;
+  stoppedTurn = null;
   currentSessionId = null;
   threadMessages = [];
   flowCount = 0;
@@ -3226,9 +3246,12 @@ async function send() {
   }
 
   els.prompt.value = '';
-  // Clear the stop flag a previous turn may have left set, so a stale `true`
-  // can never make an unrelated failure look like a deliberate stop.
-  userStopped = false;
+  // This turn's identity. Claiming it here — and clearing `stoppedTurn` —
+  // replaces the old global "userStopped" flag, which any previous turn could
+  // leave set and which this send could only hope to clear in time.
+  const myTurn = ++turnSeq;
+  runningTurn = myTurn;
+  stoppedTurn = null;
   addMessage('user', prompt);
 
   // What this request travels with, resolved from ONE authority by budgetFor:
@@ -3446,8 +3469,13 @@ async function send() {
     // everything already streamed and answer with a red "aborted" error,
     // destroying the partial reply at the exact moment the user asked to keep
     // it. Salvage the partial turn and label it honestly instead.
-    if (isCancellation(err, { userStopped })) {
-      const text = streamedText || reasoningText || '(stopped before any output)';
+    if (isCancellation(err, { userStopped: stoppedTurn === myTurn })) {
+      // Which of the three outcomes this is — answer text, deliberation only,
+      // or nothing — is `salvageTurn`'s decision, so the labelling cannot
+      // drift from the salvage.
+      const salvage = salvageTurn({ streamedText, reasoningText });
+      const text = salvage.text;
+      const salvageReasoning = salvage.reasoning;
       threadMessages.push({ role: 'assistant', content: text });
       // A stopped turn is a real exchange and the CLI records one: its
       // `appendHistory` writes a `status: 'stopped'` entry for every stopped
@@ -3462,12 +3490,13 @@ async function send() {
         model,
         prompt,
         reply: text,
-        reasoning: text === reasoningText ? '' : reasoningText,
+        reasoning: salvageReasoning,
       });
       const stopBits = ['stopped by you'];
+      if (salvage.kind === 'reasoning-only') stopBits.push('reasoning only');
       if (turn.tokens != null) stopBits.push(`tokens: ${turn.tokens}`);
       else {
-        const est = estimatedBuckets(prompt, text, text === reasoningText ? '' : reasoningText);
+        const est = estimatedBuckets(prompt, text, salvageReasoning);
         if (est) stopBits.push(`~${est.input + est.output} tokens`);
       }
       const stopRollLine = fmtRoll(roll);
@@ -3480,7 +3509,7 @@ async function send() {
           ...ledgerFields(undefined, model, turn, {
             prompt,
             reply: text,
-            reasoning: text === reasoningText ? '' : reasoningText,
+            reasoning: salvageReasoning,
           }),
         });
       } catch {
@@ -3499,7 +3528,14 @@ async function send() {
     }
   } finally {
     setBusy(false);
-    pendingSessionId = null;
+    // Only this turn may clear the pending state, and only if it is still the
+    // running one. Unconditionally nulling it here is what let an outgoing
+    // turn's teardown disarm its successor — after which Escape during that
+    // successor did nothing at all.
+    if (runningTurn === myTurn) {
+      runningTurn = null;
+      pendingSessionId = null;
+    }
     loadSessions();
   }
 }

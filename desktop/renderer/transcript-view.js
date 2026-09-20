@@ -220,6 +220,11 @@ function bindEscapeInterrupt(deps) {
 
   function handle(e) {
     if (!e || e.key !== 'Escape') return false;
+    // A held key is one intent, not one per repeat. Without this the auto-repeat
+    // events keep arriving after the interrupted turn has already ended, and
+    // the ones that land once the user has sent the next message stop that turn
+    // instead — the keyboard twin of a stuck cancel button.
+    if (e.repeat) return false;
     if (typeof d.isOverlayOpen === 'function' && d.isOverlayOpen()) {
       if (typeof d.onOverlayEscape === 'function') d.onOverlayEscape();
       return false;

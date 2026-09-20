@@ -468,20 +468,40 @@ async function presetRepairPhase(win) {
   // server without asking. The row above proves the repair works; this proves
   // it stays narrow.
   await selectClass('anthropic');
+  // Wait for THIS class's own render, not merely for a state the previous leg
+  // happened to leave behind.
+  //
+  // The first version of this leg polled for `rowFound && baseValue === KEPT &&
+  // !/must be LOCAL/.test(hint)` — and every one of those three is satisfied by
+  // the state the openai-compat leg ends in, because the settings pane lists
+  // every provider regardless of class and the hint test was NEGATIVE (the
+  // repair text from the leg above is not "must be LOCAL"). So the poll could
+  // return before loadModels('anthropic') had resolved, the click then wrote
+  // its mismatch hint, and the late-resolving loadModels overwrote it with
+  // `endpoint: … · key: …` a few ms later. That is a real, timing-dependent
+  // flake: it failed once and passed on an identical rerun. Anchoring on
+  // class-specific text (`endpoint: ${KEPT}`, which only this class's loadModels
+  // writes) removes the window by construction rather than by hoping.
+  //
+  // The blocked leg above never flaked for the same reason: its predicate keys
+  // on `must be LOCAL`, which only the blocked loadModels render produces.
   const localRow = await pollUntil(
-    (s) => s.rowFound && s.baseValue === KEPT && !/must be LOCAL/.test(s.hint),
+    (s) => s.rowFound && s.baseValue === KEPT && s.hint.includes(`endpoint: ${KEPT}`),
     5000
   );
   // Precondition, asserted rather than assumed. Every branch of planPresetFill()
   // is chosen from this field, so a row that displayed empty would take the
   // "fill it in" branch and the two checks below would then be reporting on the
   // wrong rule entirely (that is exactly how the first version of this phase
-  // passed its blocked leg and failed here).
+  // passed its blocked leg and failed here). The hint is included for the same
+  // reason: it proves the class's own loadModels has landed, so nothing is left
+  // in flight that could overwrite what the click writes.
   check(
     'local-row-shows-configured-endpoint',
-    localRow.rowFound && localRow.baseValue === KEPT,
-    `the pane must display the configured local endpoint ${KEPT} before the click; ` +
-      `observed ${JSON.stringify(localRow)}`
+    localRow.rowFound && localRow.baseValue === KEPT && localRow.hint.includes(`endpoint: ${KEPT}`),
+    `the pane must display the configured local endpoint ${KEPT} AND that class's own ` +
+      `model hint before the click (a late loadModels render must not still be in ` +
+      `flight); observed ${JSON.stringify(localRow)}`
   );
 
   const localClicked = await clickPreset('local-model');
@@ -501,7 +521,8 @@ async function presetRepairPhase(win) {
     'local-mismatch-hint-says-so',
     /needs base URL/.test(afterLocal.hint),
     `when the field disagrees with the preset the hint must say so instead of ` +
-      `writing: ${JSON.stringify(afterLocal.hint.slice(0, 200))}`
+      `writing: ${JSON.stringify(afterLocal.hint.slice(0, 200))} ` +
+      `(pre-click hint was ${JSON.stringify(String(localRow.hint || '').slice(0, 200))})`
   );
 
   return { blocked, repaired, localRow, afterLocal, refused: REFUSED, repair: REPAIR, kept: KEPT };
