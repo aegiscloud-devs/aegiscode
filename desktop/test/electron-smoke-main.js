@@ -281,21 +281,47 @@ const BUBBLE_TALLY = `
   };
 `;
 
-// The LAST stopped bubble, with both halves of the honesty claim: the meta must
-// carry the label and the body must carry the surviving text. A bubble that is
-// labelled but empty is the exact defect the reasoning-only leg exists for.
-const LAST_STOPPED = `
-  var found = null;
+// The stopped-bubble state: how many stopped bubbles exist, and what the last
+// one says. Both halves of the honesty claim live here, because a bubble that
+// is labelled but empty is the exact defect the reasoning-only leg exists for.
+//
+// The COUNT is the load-bearing half, and it is why this replaced a bare
+// last-stopped lookup read straight into a `waitFor`. Three earlier legs have
+// already left stopped bubbles in the transcript, so that lookup was truthy the
+// instant it was asked and the wait returned the SUCCESSOR bubble without
+// waiting at all. The reasoning-only leg then asserted against a turn it never
+// drove, and read as a product failure roughly one run in three. Callers anchor
+// on "one more stopped bubble than before", which makes the wait wait for this
+// leg own bubble.
+//
+// The wait deliberately does NOT test the label. Waiting on the assertion would
+// make the assertion unfalsifiable, which is the same defect in a new costume.
+const STOPPED_STATE = `
+  var s = { count: 0, meta: '', body: '' };
   var rows = document.querySelectorAll('#messages .msg');
   Array.prototype.forEach.call(rows, function (r) {
     var m = r.querySelector('.meta');
     if (m && m.textContent.indexOf('stopped by you') !== -1) {
+      s.count += 1;
       var b = r.querySelector('.body');
-      found = { meta: m.textContent, body: b ? b.textContent : '' };
+      s.meta = m.textContent;
+      s.body = b ? b.textContent : '';
     }
   });
-  return found;
 `;
+
+// Poll the stopped-bubble state until it holds at least `minCount` of them, or
+// the deadline passes — then return what was actually seen. Returning rather
+// than throwing keeps the observed meta and count in the failure detail, so a
+// miss reads as "count 3 -> 3, meta=..." instead of a bare timeout.
+async function pollStopped(win, minCount, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const seen = await js(win, STOPPED_STATE + 'return s;');
+    if (seen.count >= minCount || Date.now() > deadline) return seen;
+    await sleep(100);
+  }
+}
 
 // The tally, but only once the turn has finished unwinding: `waitFor` needs a
 // falsy value to keep polling, and "Send is disabled" is the honest signal that
@@ -788,10 +814,14 @@ async function stopEdgesPhase(win) {
     'the reasoning-only turn to stream deliberation'
   );
   const reasoningAtEscape = await js(win, 'return { len: liveReasoning().length, answer: liveText().length };');
+  const reasonedBefore = await js(win, STOPPED_STATE + 'return s;');
   await js(win, ESCAPE);
-  const reasoned = await waitFor(
-    () => js(win, LAST_STOPPED),
-    'the reasoning-only salvage bubble'
+  const reasoned = await pollStopped(win, reasonedBefore.count + 1);
+  check(
+    'reasoning-only-added-a-stopped-bubble',
+    reasoned.count === reasonedBefore.count + 1,
+    `stopped bubbles ${reasonedBefore.count} -> ${reasoned.count} (the press must settle exactly ` +
+      `one more stopped turn; meta=${JSON.stringify(reasoned.meta)})`
   );
   check(
     'reasoning-only-streamed-no-answer',
@@ -801,20 +831,115 @@ async function stopEdgesPhase(win) {
   );
   check(
     'reasoning-only-labelled',
-    reasoned && reasoned.meta.indexOf('reasoning only') !== -1,
-    `meta=${JSON.stringify(reasoned && reasoned.meta)} — a turn stopped with no answer text must say so`
+    reasoned.meta.indexOf('reasoning only') !== -1,
+    `meta=${JSON.stringify(reasoned.meta)} — a turn stopped with no answer text must say so`
   );
   check(
     'reasoning-only-not-empty',
-    reasoned && norm(reasoned.body).length > 200,
-    `salvaged body=${reasoned ? norm(reasoned.body).length : 0} chars — the deliberation must survive ` +
+    norm(reasoned.body).length > 200,
+    `salvaged body=${norm(reasoned.body).length} chars — the deliberation must survive ` +
       `the stop instead of leaving an empty bubble`
   );
   out.reasoningOnly = {
-    meta: reasoned ? reasoned.meta : null,
-    bodyLength: reasoned ? norm(reasoned.body).length : 0,
+    stoppedBubbles: reasoned.count,
+    meta: reasoned.meta || null,
+    bodyLength: norm(reasoned.body).length,
   };
 
+  return out;
+}
+
+const QUEUE_HINT = "var el=document.getElementById('queue-hint'); return el ? el.textContent : '';";
+
+/**
+ * Phase 11: the ⊘ mark — a tool line whose result never arrived.
+ *
+ * Unreachable from the transcript, and that is the finding rather than an
+ * inconvenience: `engine.js` emits `phase: 'run'` before the tool executes and
+ * `phase: 'done'` (always with an explicit boolean `ok`) after, and BOTH
+ * transcript handlers deliberately drop the run frame
+ * (`if (chunk.tool.phase === 'run') { captureDiffPreview(...); return; }`) so a
+ * tool is never printed twice. No stub payload can therefore make the
+ * transcript draw ⊘: the only frame that reaches `toolActivityLabel` there
+ * carries a real `ok`, so it can only ever be ✓ or ✗.
+ *
+ * The queue lane is the surface that renders a raw run frame. The worker emits
+ * `{ type: 'tool', taskId, tool: chunk.tool }` with no phase filter
+ * (lib/local/autonomous.js), main forwards it verbatim over
+ * QUEUE_PROGRESS_CHANNEL, and renderQueueProgress has no phase guard either
+ * (renderer/app.js). So a run frame draws the live row as ⊘ — "interrupted",
+ * not "succeeded" — which is the whole point of the branch: the old
+ * `ok === false ? '✗' : '✓'` drew a tick for a call the turn never finished.
+ *
+ * One synthetic thing, stated plainly: the event is sent by the driver rather
+ * than by a draining worker, because driving a real drain needs a queue file, a
+ * cwd, and an agent loop that returns `tool_calls`. The SHAPE is exactly what
+ * autonomous.js emits, and everything downstream of the channel is production —
+ * main's channel constant, preload's listener, the renderer's handler and label.
+ */
+async function toolMarkPhase(win) {
+  const { QUEUE_PROGRESS_CHANNEL } = require('../main.js');
+  const out = {};
+  const send = (tool) =>
+    win.webContents.send(QUEUE_PROGRESS_CHANNEL, { type: 'tool', taskId: 7, tool });
+
+  /** Read #queue-hint until it shows `needle`, or report what it did show. */
+  const hintFor = async (needle, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    let seen = '';
+    for (;;) {
+      seen = String((await js(win, QUEUE_HINT)) || '');
+      if (seen.includes(needle)) return seen;
+      if (Date.now() > deadline) return seen;
+      await sleep(100);
+    }
+  };
+
+  const TOOL = { name: 'writeFile', args: { file_path: 'NOTES.md' }, id: 'call_smoke_tool' };
+
+  // 1. The run frame: the call has started and no result has arrived. This is
+  //    the state the branch exists for, and the one the old code got wrong.
+  send({ ...TOOL, phase: 'run' });
+  const running = await hintFor('writeFile');
+  check(
+    'queue-run-frame-marked-interrupted',
+    running.endsWith('⊘'),
+    `#queue-hint read ${JSON.stringify(running)} — a tool whose result has not arrived must ` +
+      `be ⊘, not ✓`
+  );
+  check(
+    'queue-run-frame-not-marked-ok',
+    !running.includes('✓'),
+    `#queue-hint read ${JSON.stringify(running)} — the run frame drew a success tick for a call ` +
+      `that had not finished`
+  );
+  check(
+    'queue-run-frame-names-the-tool',
+    running.includes('NOTES.md'),
+    `#queue-hint read ${JSON.stringify(running)} — the live row must say which file, not only ` +
+      `which tool`
+  );
+
+  // 2. The done frame with ok:true — same row, now genuinely finished.
+  send({ ...TOOL, phase: 'done', ok: true });
+  const done = await hintFor('✓');
+  check(
+    'queue-done-frame-marked-ok',
+    done.endsWith('✓'),
+    `#queue-hint read ${JSON.stringify(done)} — a completed call is a tick`
+  );
+
+  // 3. The done frame with ok:false — failed is a cross, distinct from both the
+  //    tick and the interruption. Three outcomes, three glyphs, one row.
+  send({ ...TOOL, phase: 'done', ok: false });
+  const failed = await hintFor('✗');
+  check(
+    'queue-failed-frame-marked-cross',
+    failed.endsWith('✗'),
+    `#queue-hint read ${JSON.stringify(failed)} — a failed call is a cross, not an interruption`
+  );
+
+  out.marks = { interrupted: running, done, failed };
   return out;
 }
 
@@ -1009,6 +1134,11 @@ async function main() {
   // the preset phase below, which switches the class picker away from it.
   const stopEdges = await stopEdgesPhase(win);
 
+  // Phase 11's ⊘ leg. Independent of the transcript — it drives the queue
+  // progress channel — so it does not care which class is selected, but it
+  // stays here so the preset phase below remains the last one.
+  const toolMarks = await toolMarkPhase(win);
+
   // The local-only endpoint policy's recovery leg. Runs LAST on purpose: it
   // switches the class picker off Aegis Cloud, which the chat phase above
   // depends on, and it rewrites settings.json behind the running app.
@@ -1018,6 +1148,7 @@ async function main() {
     prepared,
     streamedLen: streamed.len,
     stopEdges,
+    toolMarks,
     presetRepair,
     scrollUp,
     before,
