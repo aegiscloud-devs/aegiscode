@@ -18,11 +18,17 @@
  *          free ride — and why the key must never be handed to a direct provider
  *          call from here.
  *
- * Only those two: `cls` is the engine's own class selector, and the two local
- * classes (ollama, custom endpoints) stay stubs that throw if the engine ever
- * calls them. They need a settings/endpoint surface this host does not offer,
- * and a stub is proof that a code path meant for another host never silently
- * runs here.
+ *   custom LOCAL endpoints only. The `custom` class (the /model add catalog)
+ *          reaches the direct provider transport — the free lane — and the
+ *          catalog refuses every base URL that is not on this machine, so the
+ *          only usage that never touches aegiscloud.org is usage with no vendor
+ *          behind it (see custommodels.js isLocalEndpoint). A remote entry is
+ *          refused in-process before any network call and pointed at /class
+ *          byok, which bills the AEGIS handling fee.
+ *
+ * Ollama stays a stub that throws if the engine ever calls it: it needs an
+ * endpoint surface this host does not offer, and a stub is proof that a code
+ * path meant for another host never silently runs here.
  *
  * ── the key store ───────────────────────────────────────────────────────────
  *
@@ -44,11 +50,16 @@ const VERSION = require('../package.json').version;
 
 /**
  * The classes this host can actually run (see the docstring above).
- *  aegis  — the pooled route (account key pays, pool picks the provider).
+ *  aegis  — the pooled route (account key pays, pool picks the provider; bills).
  *  byok   — the BYOK relay (your provider key, AEGIS bills a handling fee).
- *  custom — the /model add catalog: your own base URL + key, called DIRECTLY
+ *  custom — the /model add catalog, LOCAL endpoints only: your own base URL +
+ *           key on this machine (llama.cpp, Ollama, a LAN box), called DIRECTLY
  *           through the desktop transport with the full tool loop, never
- *           touching aegiscloud.org (no margin, no fee).
+ *           touching aegiscloud.org. Free of AEGIS fee and margin for exactly
+ *           that reason, which is why a remote base URL is refused here: no
+ *           other class may reach the direct transport, and nothing on this
+ *           lane is metered, so remote usage on it would be unpaid. Remote
+ *           providers go through /class byok instead, where the relay bills.
  */
 const HOST_CLASSES = Object.freeze(['aegis', 'byok', 'custom']);
 
@@ -59,7 +70,7 @@ const DEFAULT_CLASS = 'aegis';
 const CLASS_LABELS = Object.freeze({
   aegis: 'AEGIS Cloud (pooled)',
   byok: 'Bring your own key (relayed, billed)',
-  custom: 'Custom endpoint (your key, direct)',
+  custom: 'Custom endpoint (local only — free, direct)',
 });
 
 function unsupported(label) {
@@ -95,10 +106,12 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
       chat: unsupported('Ollama'),
     },
     // The real direct-provider transport — no longer a throwing stub. The
-    // `custom` class (the /model add catalog) rewrites a turn to the
-    // 'openai-compat' / 'anthropic' class the desktop engine already drives
-    // through exactly these two functions, so a user's own endpoint gets the
-    // same tool loop the pooled class does.
+    // `custom` class (the /model add catalog, LOCAL endpoints only) rewrites a
+    // turn to the 'openai-compat' / 'anthropic' class the desktop engine
+    // already drives through exactly these two functions, so a local endpoint
+    // gets the same tool loop the pooled class does. Nothing else in this host
+    // reaches them: prepareCustom's local-only gate is the only door, and it
+    // throws for a remote base URL before the call.
     providers: {
       anthropicMessages: providers.anthropicMessages,
       openaiCompatible: providers.openaiCompatible,
@@ -127,6 +140,14 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
    * dispatch reads), and the payload's class + model are set to that wire class
    * and the entry's real model string. Throws a clear, in-process error rather
    * than shipping `model: undefined` or an empty base URL upstream.
+   *
+   * The local-only gate is the first thing after the catalog lookup, and it
+   * runs BEFORE any network call, before the key check and before the
+   * just-in-time settings write: a remote entry throws here, so the direct
+   * provider transport below is never reached with one and there is no
+   * fall-through path to it. Remote providers are billed, and nothing on this
+   * lane is metered, so the refusal points at /class byok (billed) and at a
+   * local address (free).
    */
   function prepareCustom(payload) {
     const modelId = payload && payload.model;
@@ -137,6 +158,11 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
           ? `custom: no model "${modelId}" in the catalog — /model add <id> <name> <model> <baseURL>, or /models to list.`
           : 'custom: no model pinned — pin one with /model <id> (/models lists your custom endpoints).'
       );
+      err.status = 400;
+      throw err;
+    }
+    if (!resolved.local) {
+      const err = new Error(custom.remoteRefusal(resolved.baseURL));
       err.status = 400;
       throw err;
     }
