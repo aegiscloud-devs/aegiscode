@@ -20,7 +20,7 @@ Status:
 - [x] Phase 8 — P3.5 renderer testability: prove the DOM paths, not just pure policy
 - [x] Phase 9 — P3.6 headless Electron smoke in CI (scroll-hold + interrupt)
 - [x] Phase 10 — P3.7 stream lifecycle hardening (abort re-entrancy, partial salvage)
-- [ ] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
+- [x] Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
 - [ ] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
 
 ---
@@ -338,7 +338,7 @@ Verified at this commit: `test/electron-smoke.mjs` — 98 passed, 0 failed;
 
 ---
 
-## Phase 11 — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
+## Phase 11 ✅ — P3.8 endpoint policy: record the shipped rule, close the ⊘ gap
 
 Scope. The local-only endpoint rule is **enforced in code but unrecorded in the
 plan**, and one doc line now contradicts the binary.
@@ -376,7 +376,59 @@ Exit criteria:
   `172.20.x`, `192.168.x`, `[::1]`, `*.local` allowed; `api.z.ai`,
   `api.openai.com`, `172.32.x`, `192.169.x`, non-http schemes and unparseable
   input refused) stay pinned.
-- A DOM leg renders an aborted tool call as ⊘.
+- A DOM leg renders an aborted tool call as ⊘. ✅ — but **not** through the
+  transcript, and that is the finding rather than a shortcut. `engine.js` emits
+  `phase: 'run'` before the tool executes and `phase: 'done'` (always with an
+  explicit boolean `ok`) after, and both transcript handlers deliberately drop
+  the run frame (`if (chunk.tool.phase === 'run') { …; return; }`) so a tool is
+  never printed twice. No stub payload can therefore make the transcript draw
+  ⊘: the only frame that reaches `toolActivityLabel` there carries a real `ok`,
+  so it can only ever be ✓ or ✗. The leg rides the queue lane instead, which
+  renders a raw run frame — `autonomous.js` emits
+  `{ type: 'tool', taskId, tool: chunk.tool }` with no phase filter, main
+  forwards it verbatim over `QUEUE_PROGRESS_CHANNEL`, and
+  `renderQueueProgress` has no phase guard either. Three outcomes, three glyphs,
+  one row: `queue-run-frame-marked-interrupted` (⊘),
+  `queue-done-frame-marked-ok` (✓), `queue-failed-frame-marked-cross` (✗), plus
+  `queue-run-frame-not-marked-ok` and `queue-run-frame-names-the-tool`.
+  One synthetic element, stated plainly: the driver sends the event rather than
+  a draining worker, because a real drain needs a queue file, a cwd, and an
+  agent loop returning `tool_calls`. Everything downstream of the channel is
+  production code.
+
+  The falsifiability control was run, not assumed: restoring `toolMark`'s
+  former `ok === false ? '✗' : '✓'` fails both ⊘ checks with
+  `#queue-hint read "#7 → writeFile NOTES.md ✓"` — a success tick for a call
+  that had not finished, which is the defect the branch exists for. `✗` and ✓
+  correctly kept passing, so the ⊘ checks are specific and not merely noisy.
+
+Recorded correction, from the Phase 10 leg this subsumes. What stops a stale
+abort reaching a live successor is the turn-token invariant, **not**
+`stopAppliesTo`: `stopAppliesTo(8, 7)` is deliberately `true`, because a live
+successor *is* stoppable. The doc comment and the assertion were both rewritten
+to the reachable-pair invariant rather than the claim the code does not make.
+
+Harness fix in the same commit. `reasoning-only-labelled` failed roughly one run
+in three, and it was a harness race, not a product defect: `LAST_STOPPED` scanned
+the whole transcript for the *last* stopped bubble, and three earlier legs
+already leave stopped bubbles behind — so the `waitFor` was truthy the instant it
+was asked and asserted against the **successor's** bubble, a turn it never drove.
+The failing meta read `3 calls` where the control read `4 calls`, which is the
+direct confirmation. Replaced by `STOPPED_STATE` + `pollStopped(win, count + 1)`,
+anchored on one more stopped bubble than before and deliberately **not** on the
+label, because waiting on the assertion would make the assertion unfalsifiable —
+the same defect in a new costume.
+
+Open reliability item, observed once and not yet fixed: one smoke run in four
+during this phase died with `timed out waiting for the successor turn to stream`
+(`liveText().length > 1200` within `waitFor`'s 20s). That leg is **not** touched
+by this diff, so it is recorded as its own concern rather than folded into this
+phase — but it is a claim about the harness's determinism, and it is not yet
+either reproduced deliberately or proven pre-existing.
+
+Verified at this commit: `test/electron-smoke.mjs` — **110 passed, 0 failed**,
+three consecutive runs; 71 root suites + 2 desktop-local, 0 failures; `npm run
+check` exit 0 in both packages.
 
 ---
 
@@ -386,8 +438,8 @@ Scope. Two packages are bumped and neither is published.
 
 - `cli/package.json` 6.7.7 → 6.7.8; `desktop/package.json` + the lockfile
   0.7.7 → 0.7.8. The bump is **uncommitted**.
-- `c04eb4e` (the harness falsifiability fix) is committed but **unpushed**, as is
-  the plan commit that records this phase.
+- `c04eb4e` (the harness falsifiability fix) and Phase 11's coverage commit are
+  committed but **unpushed**, as is the plan commit that records this phase.
 - The green run above predates the bump, so nothing has yet been verified
   *after* the version change.
 
