@@ -224,7 +224,7 @@ Three layers, from broadest to narrowest. You only need the first one.
 /class            # show the picker
 /class aegis      # pooled AEGIS Cloud (the default)
 /class byok       # your own provider key, relayed by AEGIS
-/class custom     # your own endpoint, called by aegiscode directly
+/class custom     # a LOCAL endpoint of yours (Ollama, llama.cpp, a LAN box), called directly
 ```
 
 A class is *whose credential pays and who talks to the vendor*, not a model.
@@ -236,7 +236,7 @@ restart.
 |---|---|---|
 | `aegis` *(default)* | the AEGIS pool — one id, `nexus-brain` (alias `aegis-brain`), auto-routed server-side across whichever providers are live | your AEGIS account balance |
 | `byok` | your provider key, relayed via `POST /api/v1/byok/chat/completions` | your provider direct, **plus** a small AEGIS handling fee on your account |
-| `custom` | your own base URL, called **directly** by aegiscode — nothing is relayed | your provider direct. No AEGIS fee, no margin, no account balance |
+| `custom` | a **local** base URL (localhost, a LAN address, `*.local`, a dotless host name) called **directly** by aegiscode — nothing is relayed | nobody. No vendor is involved, so there is no cost, no AEGIS fee and no margin. Remote endpoints are refused here — use `byok` |
 
 **2. The model id — what to pin.**
 
@@ -262,7 +262,7 @@ Under `byok` every id is compound — `provider:model`:
 Under `custom` the id is whatever you named the entry:
 
 ```bash
-/models                       # e.g.  local-llama, work-gateway
+/models                       # e.g.  local-llama, lan-box
 /model local-llama
 ```
 
@@ -286,27 +286,67 @@ the per-provider mechanics).
 > **A `byok` turn is single-shot.** The relay takes no `tools` parameter, so the
 > agentic tool loop is off by construction — no file edits, no shell, no
 > subagents, no approval cards. `/class` says so rather than letting you discover
-> it mid-task. **`custom` does not have this limit** — aegiscode calls your
+> it mid-task. **`custom` does not have this limit** — aegiscode calls the local
 > endpoint itself, so the full tool loop works normally.
 
-## Custom models — your endpoint, called directly
+## Custom models — your local endpoint, called directly
 
-`/model add` teaches aegiscode about an endpoint AEGIS never sees. There is no
-relay, no handling fee and no margin: the request goes straight from your machine
-to the base URL you gave, with the key you gave.
+`/model add` teaches aegiscode about an endpoint on **your own machine** — an
+Ollama or llama.cpp server, a box on your LAN. There is no relay, no handling fee
+and no margin: the request goes straight from your machine to the base URL you
+gave, with the key you gave, and no vendor is paid because no vendor is
+involved.
+
+**Local only, by policy.** Remote endpoints are *not offered* on this lane. Every
+other class bills — `aegis` the pooled route, `byok` the AEGIS handling fee on
+the relay — and this lane bills nothing, so it is free for exactly one kind of
+traffic: traffic that never leaves your machine. A remote base URL is refused at
+the moment you add it, with a pointer at the lane that can serve it:
+
+```console
+$ /model add work-gw "Work gateway" gpt-4o https://gw.corp/v1
+couldn't add "work-gw": custom endpoints must be LOCAL — remote base URL "https://gw.corp/v1"
+is not offered on this lane. Allowed: localhost, 127.0.0.1, a private/LAN address
+(10.x, 172.16-31.x, 192.168.x), *.local/.internal/.lan, or a dotless host like "ollama".
+Remote providers are billed, so use /class byok with /byok-key <provider> (the AEGIS
+relay charges the handling fee there), or point this entry at a local address.
+```
+
+There is no flag, env var or override that re-opens the remote direct lane: such
+a switch would be a billing bypass. The refusal is enforced twice — in the add
+path, and again in the dispatch gate before any network call — so an entry left
+in `config.json` from an older build is still refused rather than dialled.
 
 ```bash
 /model add local-llama  "Local Llama"  llama-3.3-70b  http://localhost:11434/v1
-/model add work-gw      "Work gateway" gpt-4o        https://gw.corp/v1  openai
+/model add lan-box      "LAN box"      qwen3:32b      http://192.168.1.40:8080/v1
 /model key local-llama                  # set or replace the key later (prompted, masked)
 /class custom                           # route turns through these
 /model local-llama                      # pin one
 /model remove local-llama               # drop the entry and its key
 ```
 
-The wire protocol is detected from the base URL — `anthropic.com` gets the
-Messages API, everything else the OpenAI-compatible one — or you can pass
-`openai` / `anthropic` explicitly to override it.
+Remote providers are a `byok` concern, and that lane bills:
+
+```bash
+/class byok
+/byok-key openai        # …or anthropic, groq, deepseek, …
+/model openai:gpt-4o
+```
+
+A local base URL counts as local when it is a loopback address (`localhost`,
+`127.0.0.0/8`, `::1`), a private range (`10/8`, `172.16/12`, `192.168/16`,
+`fc00::/7`), link-local (`169.254/16`, `fe80::/10`), a reserved local suffix
+(`.local`, `.internal`, `.lan`) or a bare dotless host name (`ollama`). Anything
+else — including an address that does not parse — is treated as remote and
+refused: the classifier fails closed, so an ambiguity costs you a retry, never an
+unpaid remote turn.
+
+The wire protocol is inferred from the base URL — anything that is not
+`anthropic.com` speaks the OpenAI-compatible shape, which is what a local
+inference server (Ollama, llama.cpp, vLLM, LM Studio) does — or you can pass
+`openai` / `anthropic` explicitly to override it, which is how you point the
+Messages API at a local gateway.
 
 Where things are stored, and why it is split:
 
@@ -425,7 +465,7 @@ echo "why is the sky blue" | aegiscode -p -
 /class aegis                       # back to the pool
 
 /model add local-llama "Local Llama" llama-3.3-70b http://localhost:11434/v1
-/class custom                      # or call your own endpoint directly
+/class custom                      # or call a LOCAL endpoint directly (remote URLs are refused — use byok)
 ```
 
 ### Control the budget

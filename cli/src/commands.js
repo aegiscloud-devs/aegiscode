@@ -893,7 +893,7 @@ const COMMANDS = [
           // never a network problem: the catalog is local, so the only cause is
           // that it has not been filled in yet.
           note(c, custom
-            ? 'No custom endpoints yet — /model add <id> <name> <model> <baseURL> registers one (its key is prompted, or pass it last).'
+            ? 'No custom endpoints yet — /model add <id> <name> <model> <baseURL> registers a LOCAL endpoint (its key is prompted, or pass it last).'
             : byok
               ? 'No relayable models — this machine holds no provider key yet. Save one with /byok-key <provider>, then retry /model.'
               : c.state().online
@@ -941,10 +941,20 @@ const COMMANDS = [
         c.render();
         return true;
       }
-      // The /model add catalog — the aegiscodex-dev concept ported in. A user
-      // registers their own endpoint (own base URL, own model string, own key)
-      // and the CLI calls it DIRECTLY through the desktop transport, the full
-      // tool loop and all: no pooled route, no BYOK relay, no fee or margin.
+      // The /model add catalog — the aegiscodex-dev concept ported in, LOCAL
+      // endpoints only. A user registers an endpoint on their own machine (own
+      // base URL, own model string, own key) and the CLI calls it DIRECTLY
+      // through the desktop transport, the full tool loop and all: no pooled
+      // route, no BYOK relay, no fee or margin — because the request never
+      // touches aegiscloud.org and there is no vendor to pay.
+      //
+      // That is only defensible for an address on this machine. A REMOTE base
+      // URL is refused (custommodels.js isLocalEndpoint, fail-closed): nothing
+      // on this lane is metered, so remote usage on it would be unpaid, and the
+      // relay cannot bill an arbitrary URL either (it accepts a fixed catalog
+      // of provider ids). The refusal points at /class byok — whose providers
+      // ARE billed, a handling fee per 1k tokens — or at a local address.
+      // There is deliberately no flag that re-opens the remote direct lane.
       // The classic entry form is the positional one
       //   /model add <id> <name> <model> <baseURL> [wire]
       // with the key prompted for (masked) right after, or supplied inline
@@ -967,6 +977,8 @@ const COMMANDS = [
         if (!fields.id || !fields.model || !fields.baseURL) {
           note(c, 'Usage: /model add <id> <name> <model> <baseURL> [openai|anthropic] [key]');
           note(c, '  e.g. /model add local Llama-3 "meta-llama/Llama-3-70b" http://localhost:8080/v1');
+          note(c, '  the base URL must be LOCAL (localhost, 127.0.0.1, a LAN address, *.local, or a dotless host like "ollama").');
+          note(c, '  remote providers are billed, so they are not offered here — /class byok with /byok-key <provider> relays them and charges the AEGIS handling fee.');
           note(c, '  the key is prompted for and stored 0600 on this machine — never in config.json.');
           c.render();
           return true;
@@ -988,7 +1000,7 @@ const COMMANDS = [
         if (key) {
           customModelsCatalog.setCustomKey(entry.id, key, store);
         }
-        note(c, `added "${entry.id}" → ${entry.model} at ${entry.baseURL} (${entry.wire} wire)${key ? '' : ' — no key yet'}.`);
+        note(c, `added "${entry.id}" → ${entry.model} at ${entry.baseURL} (${entry.wire} wire)${key ? '' : ' — no key yet'} — local endpoint, direct and free.`);
         note(c, key
           ? `run it with /class custom (then /model ${entry.id}), or /model ${entry.id} while on the custom class.`
           : `add its key with /model key ${entry.id}, then /class custom runs it.`);

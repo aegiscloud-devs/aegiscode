@@ -84,7 +84,10 @@ const autonomousPath = resolveShared(path.join('desktop', 'lib', 'local', 'auton
 // The direct-provider transport (openaiCompatible + anthropicMessages). The
 // desktop injects it into createLocalEngine for its custom-endpoint classes;
 // the CLI injects the same real module for its `custom` class (the /model add
-// catalog) rather than the throwing stub it shipped before.
+// catalog) rather than the throwing stub it shipped before. That catalog is
+// LOCAL-ONLY (see custommodels.js isLocalEndpoint): the free direct lane may
+// only carry an endpoint on this machine, and the engine's gate refuses a
+// remote base URL before this module is ever called.
 const providersPath = resolveShared(path.join('desktop', 'lib', 'local', 'providers.js'));
 
 const { createClient } = require(clientPath);
