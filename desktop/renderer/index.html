@@ -92,12 +92,18 @@
 
         <label for="model-select">Model</label>
         <select id="model-select"></select>
-        <select id="model-preset" hidden title="Quick-fill a known model + base URL"></select>
+        <!-- Typed model tag. Hidden unless the local class has no list to pick
+             from: a daemon that is not running, or one that does not speak
+             Ollama's /api/tags (llama.cpp, LM Studio, vLLM). Those still serve
+             the OpenAI-compatible chat route, so a typed tag is a working path,
+             not a fallback that cannot send. Was a dead <input> left behind
+             when the custom-endpoint class was removed. -->
         <input
           type="text"
           id="model-input"
-          placeholder="type a model id — e.g. gpt-4o-mini"
+          placeholder="model tag — e.g. llama3.2:3b"
           autocomplete="off"
+          spellcheck="false"
           hidden
         />
 

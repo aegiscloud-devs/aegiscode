@@ -57,6 +57,11 @@ const FILES = [
   // reuses it as-is, scoped to the 'aegis' class only (see src/engine.js) —
   // one tool loop implementation, not a second one drifting alongside it.
   'desktop/lib/local/engine.js',
+  // engine.js and settings.js both require this at load time: it is the local
+  // model transport, and the module that owns the fail-closed check deciding
+  // whether a base URL is on this machine. Leaving it out stages a vendor tree
+  // whose engine throws MODULE_NOT_FOUND before it can answer anything.
+  'desktop/lib/local/local.js',
   // engine.js requires this at load time to hold a turn cut off at its tool
   // horizon: the interruption is filed against the session and the next turn
   // resumes it instead of starting cold. Staging engine.js without it ships a

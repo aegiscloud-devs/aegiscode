@@ -15,6 +15,23 @@ const { createClient } = require('../client/aegis.js');
 const credentials = require('../client/credentials.js');
 const { createTools } = require('./tools.js');
 
+// `~/.aegiscode/.env` read into process.env once, before anything resolves a
+// credential. Without this the one-instruction setup ("put your key in
+// ~/.aegiscode/.env") would be true in the CLI and the desktop and false here,
+// because this host resolves a key from the environment or the 0600 store and
+// nothing filled the environment from the file. A variable already exported in
+// the environment Claude Code was launched from always wins. Failure is never
+// fatal: an absent file is the pre-existing state, not an error.
+try {
+  const loaded = require('../client/env-file.js').loadEnvFile();
+  if (loaded.loose) {
+    process.stderr.write(
+      `aegis: ${loaded.file} is readable by other accounts (mode ` +
+        `${loaded.mode.toString(8)}) — consider \`chmod 600\` on it.\n`
+    );
+  }
+} catch { /* an absent or unreadable file is not a startup error */ }
+
 // The account credential is resolved the same way in all four hosts: the
 // environment first, then the 0600 store the terminal host writes with
 // `aegiscode login` (or /key), then a legacy config.json. This host used to
@@ -33,7 +50,7 @@ const API_KEY = aegis.apiKey;
 const API_BASE = aegis.apiBase;
 const SERVER_NAME = 'aegis';
 // Keep in sync with .claude-plugin/plugin.json "version".
-const SERVER_VERSION = '0.3.1';
+const SERVER_VERSION = '0.4.0';
 
 /** The one instruction that actually resolves a missing key. */
 function missingKeyText() {
@@ -44,6 +61,7 @@ function missingKeyText() {
     'Set one with any of:',
     '  • `aegiscode login` in a terminal (saves it to ' + path + ', mode 0600)',
     '  • export AEGIS_API_KEY=… in the environment Claude Code was launched from',
+    '  • put `AEGIS_API_KEY=…` in ~/.aegiscode/.env (read at startup, every host)',
     '',
     'Then restart Claude Code. Get a key at https://aegiscloud.org.',
   ].join('\n');

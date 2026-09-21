@@ -18,6 +18,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// The local-model transport. Required for ONE function: `remoteRefusal`, the
+// fail-closed check that keeps a non-local base URL out of the `local` row. The
+// module owns that policy so this store, the engine and the CLI cannot drift
+// about what "local" means — the failure mode a second implementation would
+// produce is one host refusing an unpaid turn while another served it.
+const localTransport = require('./local/local.js');
+
+/** The provider row the `local` class reads its base URL from. Not a reserved
+ *  namespace: it is a legitimate config row, and `list()` reporting it is
+ *  harmless because the byok rows are selected by their `byok:` prefix. */
+const LOCAL_NAMESPACE = 'local';
+
 const SETTINGS_FILE = 'settings.json';
 
 /**
@@ -157,18 +169,26 @@ function createSettingsStore({ dir, safeStorage } = {}) {
   /**
    * Write a provider row.
    *
-   * There is no endpoint policy at this seam any more. That guard existed for
-   * the direct-dial classes ('openai-compat', 'anthropic', 'custom:*'), which
-   * talked to a base URL themselves and so could be pointed at a remote host
-   * that bills nobody (see the removed `local/endpoints.js`). Those classes are
-   * gone: the surviving rows are `byok:<provider>`, which are remote by
-   * definition and reach their provider through AEGIS's relay — that relay is
-   * what bills the turn, so a remote base URL is no longer a misconfiguration
-   * to refuse. `baseURL` stays in the record shape for back-compat with rows
-   * already on disk.
+   * The endpoint policy lives at this seam for exactly one namespace: `local`,
+   * the row holding the local model server's base URL. It is refused HERE so
+   * the unusable configuration cannot be created — a row that could never
+   * legally be dialed should not be persistable, because it would sit on disk
+   * looking like a working setup. The engine re-checks before every call as
+   * well (a file hand-edited after it was written cannot be spent either), so
+   * there are two gates for two failure modes.
+   *
+   * Every other row is a `byok:<provider>`, and those stay policy-free: they are
+   * remote by definition and reach their provider through AEGIS's relay, and the
+   * relay is what bills the turn — so a remote address there is correct rather
+   * than a misconfiguration. `baseURL` stays in the record shape for back-compat
+   * with rows already on disk.
    */
   function set(provider, { baseURL, key } = {}) {
     assertNotReserved(provider);
+    if (provider === LOCAL_NAMESPACE && baseURL) {
+      const refusal = localTransport.remoteRefusal(baseURL);
+      if (refusal) throw refusal;
+    }
     const data = load();
     const cfg = data[provider] || {};
     if (baseURL !== undefined) cfg.baseURL = baseURL;

@@ -1,8 +1,8 @@
 {
   "name": "aegis-desktop",
   "productName": "AEGIS Desktop",
-  "version": "0.7.8",
-  "description": "Thin Electron host for AEGIS \u2014 a local chat UI over the shared client/aegis.js transport. Ships transport + UI only; engine logic stays server-side.",
+  "version": "0.8.0",
+  "description": "Thin Electron host for AEGIS — a local chat UI over the shared client/aegis.js transport. Ships transport + UI only; engine logic stays server-side.",
   "author": {
     "name": "AEGIS Code",
     "email": "nborneklint@gmail.com"
@@ -35,7 +35,7 @@
     "shots": "node scripts/capture-marketing-shots.mjs",
     "dist": "npm run predist && electron-builder",
     "dist:dir": "npm run predist && electron-builder --dir",
-    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/quick.js && node --check renderer/budget.js && node --check renderer/usage.js && node --check renderer/stream-policy.js && node --check renderer/transcript-view.js && node --check renderer/diff.js && node --check renderer/diffview.js && node --check renderer/markdown.js && node --check renderer/vendor/aegis-highlight.js && node --check scripts/predist.mjs && node --check scripts/generate-icon.mjs && node --check lib/local/context.js && node --check lib/local/engine.js && node --check lib/local/session-rounds.js && node --check lib/local/tools.js && node --check lib/local/prompt.js && node --check lib/local/shell.js && node --check lib/local/agents.js && node --check lib/local/queue.js && node --check lib/local/autonomous.js && node --check lib/settings.js && node --check lib/sync/sessions.js && node --check lib/sync/memory-queue.js && node --check lib/window-state.js && node --check lib/deep-link.js && node --check lib/quick-launcher.js && node --check bin/aegis.js",
+    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/quick.js && node --check renderer/budget.js && node --check renderer/usage.js && node --check renderer/stream-policy.js && node --check renderer/transcript-view.js && node --check renderer/diff.js && node --check renderer/diffview.js && node --check renderer/markdown.js && node --check renderer/vendor/aegis-highlight.js && node --check scripts/predist.mjs && node --check scripts/generate-icon.mjs && node --check lib/local/local.js && node --check lib/local/context.js && node --check lib/local/engine.js && node --check lib/local/session-rounds.js && node --check lib/local/tools.js && node --check lib/local/prompt.js && node --check lib/local/shell.js && node --check lib/local/agents.js && node --check lib/local/queue.js && node --check lib/local/autonomous.js && node --check lib/settings.js && node --check lib/sync/sessions.js && node --check lib/sync/memory-queue.js && node --check lib/window-state.js && node --check lib/deep-link.js && node --check lib/quick-launcher.js && node --check bin/aegis.js",
     "test:shell": "node ../test/desktop-shell.mjs",
     "test:model": "node ../test/model-dispatch.mjs",
     "test:budget": "node ../test/budget.test.mjs",
