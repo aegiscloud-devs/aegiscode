@@ -8,8 +8,8 @@ delegate whole sub-tasks to subagents. It does **not** require Claude Code.
 ## Install
 
 Download a build from the
-[releases page](https://github.com/aegiscloud/aegiscode-desktop/releases), or
-install from npm:
+[releases page](https://github.com/aegisinfo/aegiscode-plugin/releases) — the
+repo the release workflow publishes binaries to — or install from npm:
 
 ```bash
 npm install -g aegis-desktop     # requires Node 18+
