@@ -1,6 +1,6 @@
 # Keys, BYOK, and the Cloud API
 
-AEGIS Desktop talks to models over **three independent lanes**. They are not
+AEGIS Desktop talks to models over **two independent lanes**. They are not
 variations of one setting — they differ in who holds the key, who pays, and
 whether AEGIS ever sees a credential. Pick the lane that matches where your key
 lives, and read only that section.
@@ -8,8 +8,7 @@ lives, and read only that section.
 | Lane | Key belongs to | Who pays | Leaves your machine? | AEGIS account? |
 |---|---|---|---|---|
 | **1. AEGIS Cloud** | aegiscloud.org | your token bank | key goes to AEGIS, never to the renderer | yes |
-| **2. Local provider config** | you | you (direct to provider) | no — main process only | no |
-| **3. BYOK relay** | you | you (direct to provider) | key is forwarded per request, never stored | yes (for transport) |
+| **2. BYOK relay** | you | you (direct to provider) | key is forwarded per request, never stored | yes (for transport) |
 
 Everything below is verified against `client/aegis.js`, `desktop/main.js`,
 `desktop/preload.js`, and `desktop/lib/settings.js`. Where a feature exists in
@@ -90,49 +89,13 @@ setting it to `""` will *not* point the client at localhost.
 - **Aegis Cloud** as a provider class in the model picker.
 - **`work autonomously`** — the checkbox that escalates a turn to server-side
   multi-worker fan-out (with `Effort` and `Workers` controls). This is Aegis
-  Cloud only; it is hidden for the other three classes.
+  Cloud only; it is hidden for the BYOK class.
 - **Cross-machine memory** — sessions sync to AEGIS memory, and the
   *remember* button on any reply pins an entry for recall from other machines.
 
 ---
 
-## Lane 2 — Your own provider key, held locally
-
-Use this when you have an OpenAI, Anthropic, or OpenAI-compatible endpoint and
-want the desktop app to talk to it **directly**, with no AEGIS round-trip at
-all. No AEGIS account is required for this lane, and the key never leaves your
-machine.
-
-### Configure it
-
-1. In the sidebar, open the **Provider settings** card.
-2. In the **Model** card above it, choose the provider class:
-   - **Custom OpenAI-compatible** — LM Studio, OpenRouter, vLLM, Together,
-     Groq, DeepSeek, or anything exposing `/v1/chat/completions`.
-   - **Anthropic-compatible** — Claude, or any Messages-format gateway.
-   - **Ollama** — your local daemon. No key field at all; fully offline.
-3. Enter the **base URL** and the **provider key** for that class.
-4. Pick a model. The preset dropdown quick-fills a known model id and base URL
-   together, which avoids the most common misconfiguration (a model id that
-   belongs to a different provider than the base URL).
-5. Send a message to confirm.
-
-Provider configs are persisted by `desktop/lib/settings.js` in the main
-process, in a namespace separate from the AEGIS key. They are not uploaded
-anywhere, not synced to memory, and not exposed over IPC to the renderer — the
-UI only ever holds masked previews. Switching classes mid-conversation keeps
-the context intact, and each class remembers its own base URL, key, and model.
-
-### Ollama
-
-Pick the Ollama class and the app talks to your local `ollama` daemon on its
-default port. No key, no account, no network egress. If the model list is
-empty, your daemon is not running or has no models pulled — `ollama serve` and
-`ollama pull <model>` fix both.
-
----
-
-## Lane 3 — The BYOK relay
+## Lane 2 — The BYOK relay
 
 Use this when you want a provider key to be used **per request** through AEGIS,
 without the key ever being stored server-side. This is different from Lane 2:
@@ -211,6 +174,11 @@ call, so AEGIS never stores it:
   surface. A BYOK turn is single-shot in both clients — the relay takes no
   `tools` parameter.
 
+Either client can also read a provider key from `~/.aegiscode/.env`
+(`OPENAI_API_KEY=…`, `ANTHROPIC_API_KEY=…`), which is loaded into the
+environment at startup — an alternative to `/byok-key` or the desktop's Settings
+rows, which write the `byok:<provider>` store.
+
 **B, the stored key, has no UI yet.** `desktop/renderer/app.js` does not call
 `byokStatus` or `byokSet` — the handlers exist in `main.js` and are bridged in
 `preload.js`, but nothing renders them. To use it today, reach it from a
@@ -231,11 +199,8 @@ await window.aegis.byokSet('openai', key);  // → POST /api/user/api-keys
 
 - **Just want it to work, and want memory + autonomy.** Lane 1. Get a cloud
   key, paste it into Status, click Verify.
-- **I already pay OpenAI/Anthropic and want zero AEGIS involvement.** Lane 2.
-  Provider settings, key stays in the main process.
-- **Running locally with no keys at all.** Ollama in Lane 2.
-- **I need my own provider key to work through AEGIS's transport** — for
-  server-side calls, or to fan out with my own credential. Lane 3. In the
+- **I have my own provider key and want to use it through AEGIS's transport** —
+  for server-side calls, or to fan out with my own credential. Lane 2. In the
   desktop and the CLI, pick the **BYOK** class (`/class byok` in the terminal):
   the key stays on your machine, AEGIS relays and bills a handling fee. Use the
   per-request relay if the key must never be stored anywhere; use the stored key
@@ -265,8 +230,7 @@ await window.aegis.byokSet('openai', key);  // → POST /api/user/api-keys
 | Verify fails, key looks right | Leading/trailing whitespace on paste, or a key issued by a different deployment than `AEGIS_API_BASE` |
 | `plan` shows `free` but you expect pooled models | The account tier, not the key format — check the dashboard |
 | A provider call silently falls back to pooled inference | The stored key was rejected or revoked; a bad key fails closed onto the AEGIS pool |
-| Model list empty on the Ollama class | Daemon not running, or no models pulled |
-| `byokSet` works from a script but there is no UI for it | Expected — the BYOK panel is not wired into `renderer/app.js` yet |
+| `byokSet` works from a script but there is no UI for it | Expected — the stored-key panel is not wired into `renderer/app.js` yet |
 | 429 on the relay | The BYOK relay is limited to 20 requests per minute |
 
 See also: [`README.md`](../README.md) for installation across all three

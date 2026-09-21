@@ -9,6 +9,20 @@ function assert(cond, msg) {
   if (!cond) throw new Error(`ASSERT FAILED: ${msg}`);
 }
 
+// The engine's byok class now falls back to `~/.aegiscode/.env` and the ambient
+// environment for a provider key (client/env-file.js), so whatever the
+// developer happens to have exported in the shell that runs this suite would
+// decide the outcome of the store-based assertions below. Scrub the provider
+// vars this file can reach: it tests the ENCRYPTED STORE, and the env fallback
+// has its own coverage in test/aegis-key.test.mjs. AEGIS_API_KEY is left alone
+// — every aegis stub here passes its key explicitly.
+const PROVIDER_ENV_VARS = [
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY',
+  'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY',
+  'XAI_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'HF_TOKEN',
+];
+for (const name of PROVIDER_ENV_VARS) delete process.env[name];
+
 const calls = [];
 const aegis = {
   apiKey: 'k',
@@ -39,6 +53,15 @@ const aegis = {
     if (args.onStream) args.onStream({ delta: 'hi' });
     return { model: args.model, choices: [{ message: { content: 'hi' } }] };
   },
+  // The byok lane's transport is the AEGIS relay. Only aegis and byok ship, so
+  // the shared stub carries both routes: aegis.chatCompletion above, and this
+  // byokChatCompletion, which the byok dispatch calls once a provider key from
+  // the settings store has been resolved.
+  async byokChatCompletion(args) {
+    calls.push(['byok', args]);
+    if (args.onStream) args.onStream({ delta: 'hi' });
+    return { model: args.model, choices: [{ message: { content: 'hi' } }] };
+  },
 };
 
 const settings = {
@@ -47,40 +70,36 @@ const settings = {
   list: () => [],
 };
 
-const ollama = {
-  async probe() {
-    return { running: true };
-  },
-  async listTags() {
-    return [{ id: 'llama3' }];
-  },
-  async chat(args) {
-    calls.push(['ollama', args]);
-    return { model: args.model, choices: [{ message: { content: 'hi' } }] };
-  },
-};
-
-const providers = {
-  async openaiCompatible(args) {
-    calls.push(['openai', args]);
-    return { model: args.model, choices: [{ message: { content: 'hi' } }] };
-  },
-  async anthropicMessages(args) {
-    calls.push(['anthropic', args]);
-    return { model: args.model, choices: [{ message: { content: 'hi' } }] };
-  },
-};
+// The removed classes' transports (ollama.js, providers.js) are gone from the
+// tree and the engine no longer routes to either. These stay empty objects so
+// the many createLocalEngine() call sites below keep their shape; a scripted
+// transport is wired in as the aegis client's chatCompletion instead (see
+// aegisEngine).
+const ollama = {};
+const providers = {};
 
 const engine = createLocalEngine({ aegis, settings, ollama, providers });
 
-// listClasses exposes all five classes with live ollama probe state
+/** Build an engine whose ONE scripted transport is the aegis client's
+ *  chatCompletion. The agent-loop behaviours below used to be driven through
+ *  the removed providers.js transports (openaiCompatible / anthropicMessages);
+ *  with only aegis + byok left, the transport those tests script becomes the
+ *  aegis client's own. */
+const aegisEngine = (chatCompletion, extra = {}) =>
+  createLocalEngine({ aegis: { ...aegis, chatCompletion }, settings, ollama, providers, ...extra });
+
+// listClasses now exposes exactly the two shipping classes.
 const classes = await engine.listClasses();
-assert(classes.length === 5, `expected 5 classes, got ${classes.length}`);
+assert(classes.length === 2, `expected 2 classes, got ${classes.length}`);
 const names = classes.map((c) => c.class);
-for (const n of ['aegis', 'ollama', 'openai-compat', 'anthropic', 'byok']) {
+for (const n of ['aegis', 'byok']) {
   assert(names.includes(n), `missing class ${n}`);
 }
-assert(classes.find((c) => c.class === 'ollama').configured === true, 'ollama configured');
+for (const gone of ['ollama', 'openai-compat', 'anthropic']) {
+  assert(!names.includes(gone), `removed class ${gone} must not be listed`);
+}
+assert(classes.find((c) => c.class === 'aegis').configured === true, 'aegis configured (its key is present)');
+assert(classes.find((c) => c.class === 'byok').configured === false, 'byok reports unconfigured with no stored provider row');
 
 // listModels per class
 // The aegis class offers exactly one choice: the collapsed Nexus brain. Raw
@@ -95,7 +114,8 @@ assert(aegisModels[0].hidden === undefined, 'the collapsed entry must not carry 
 assert(aegisModels[0].alias_of === undefined, 'the collapsed entry must not carry alias_of bookkeeping');
 assert(!aegisModels.some((m) => ['openai', 'anthropic', 'groq', 'gemini'].includes(m.id)), 'raw provider ids are filtered out');
 assert(!aegisModels.some((m) => /-(smart|neo)$/.test(String(m.id))), 'non-default brain tiers are filtered out');
-assert((await engine.listModels('ollama')).models[0].id === 'llama3', 'ollama models');
+// byok's model list is built from the server catalog and is exercised in full
+// in its own block below.
 
 // Regression: an older/trimmed catalog that serves *only* the alias must still
 // yield a selectable entry. The previous fixed-id lookup would return [] here,
@@ -160,51 +180,48 @@ assert(
   'the selected model id is forwarded verbatim (no client-side tier rewriting)'
 );
 
-await engine.chat({ class: 'ollama', prompt: 'hi', model: 'llama3' }, () => {});
-assert(calls[calls.length - 1][0] === 'ollama', 'ollama routes to ollama.chat');
-
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'x' }, () => {});
-assert(calls[calls.length - 1][0] === 'openai', 'custom routes to openaiCompatible');
-
-await engine.chat({ class: 'anthropic', prompt: 'hi', model: 'x' }, () => {});
-assert(calls[calls.length - 1][0] === 'anthropic', 'anthropic routes to anthropicMessages');
+// byok's routing (to the AEGIS relay) is exercised end-to-end in its own block
+// below. The removed classes have no route left to assert: their only correct
+// outcome is now a loud throw, pinned in the negative-control block further
+// down ("removed classes are a loud error").
 
 // ---- DeepSeek reasoning budget: one authority per call --------------------
 //
-// A caller-stated number IS the budget and is honoured verbatim. For the
-// non-pooled classes the renderer's max-tokens dropdown is their only budget
-// control (updateBudgetControls hides the effort row for them), so raising it
-// to an effort rung is what made the figure beside the dropdown untrustworthy:
-// a caller asking for 1024 used to run on 32768. The effort rung is the
-// DEFAULT, consulted only when no number was stated at all. An over-budget
-// turn is caught by the doubled-budget retry and emptyTurnError instead of by
-// inflating the ceiling up front — escalating on a demonstrated empty turn
-// costs less than granting the top rung to every reasoning call.
+// A caller-stated number IS the budget and is honoured verbatim: a deliberate
+// cap is a liability ceiling and no rung may raise it — a caller asking for
+// 1024 used to run on 32768. The effort rung is the DEFAULT, consulted only
+// when no number was stated at all. An over-budget turn is caught by the
+// doubled-budget retry and emptyTurnError instead of by inflating the ceiling
+// up front — escalating on a demonstrated empty turn costs less than granting
+// the top rung to every reasoning call. byok is the surviving non-pooled lane,
+// so the derived budget it puts on the wire is where this rule is observed:
+// aegis forwards only a cap the caller STATED and lets the server size the
+// rest from `effort` (pinned in the pooled block below).
 for (const model of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner']) {
-  await engine.chat({ class: 'openai-compat', prompt: 'hi', model, maxTokens: 4096 }, () => {});
+  await engine.chat({ class: 'byok', prompt: 'hi', model: `deepseek:${model}`, maxTokens: 4096 }, () => {});
   const [, args] = calls[calls.length - 1];
   assert(args.maxTokens === 4096, `${model} honours a stated ceiling verbatim, got ${args.maxTokens}`);
 }
 
 // The case the old Math.max() overrode by an order of magnitude.
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'deepseek-v4-pro', maxTokens: 1024 }, () => {});
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'deepseek:deepseek-v4-pro', maxTokens: 1024 }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 1024, 'a deliberate small cap is never raised to a rung');
 
 // No number stated at all -> the effort rung supplies the default.
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'deepseek-flash' }, () => {});
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'deepseek:deepseek-flash' }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 32768, 'an unstated budget defaults to the high rung');
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'deepseek-flash', effort: 'low' }, () => {});
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'deepseek:deepseek-flash', effort: 'low' }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 8192, 'an unstated budget at low effort uses the low rung');
 
 // A non-reasoning DeepSeek id (deepseek-chat) and a non-DeepSeek model both
 // pass their maxTokens through untouched.
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'deepseek-chat', maxTokens: 4096 }, () => {});
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'deepseek:deepseek-chat', maxTokens: 4096 }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 4096, 'deepseek-chat (non-reasoning) is not floored');
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'gpt-4o-mini', maxTokens: 4096 }, () => {});
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'openai:gpt-4o-mini', maxTokens: 4096 }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 4096, 'a non-DeepSeek model is not floored');
 
-// "adaptive" sends the model's real ceiling; it passes through unchanged.
-await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'deepseek-v4-pro', maxTokens: 300000 }, () => {});
+// A stated ceiling above the ladder passes through unchanged.
+await engine.chat({ class: 'byok', prompt: 'hi', model: 'deepseek:deepseek-v4-pro', maxTokens: 300000 }, () => {});
 assert(calls[calls.length - 1][1].maxTokens === 300000, 'a stated ceiling above the ladder passes through unchanged');
 
 // autonomous + effort/workers reach aegis1's pool_brain via `extra`
@@ -450,155 +467,29 @@ assert(aborted, 'cancel aborts the in-flight stream');
   assert(occurrences <= 1, `the partial answer is not duplicated (got ${occurrences})`);
 }
 
-// ---- defect B: custom endpoints offer no base-URL-as-model-id -------------
+// ---- removed classes are a loud error, not a silent fallback --------------
 //
-// listModels used to return [{ id: cfg.baseURL }] for openai-compat/anthropic.
-// Leaving that default selected POSTed `model: "https://api.openai.com/v1"`,
-// an upstream 400 invalid-model on every call.
-for (const cls of ['openai-compat', 'anthropic']) {
-  const listed = await engine.listModels(cls);
-  assert(
-    Array.isArray(listed.models) && listed.models.length === 0,
-    `${cls} lists no models, got ${JSON.stringify(listed.models)}`
-  );
-  assert(listed.needsModelId === true, `${cls} sets needsModelId`);
-  assert(
-    !listed.models.some((m) => m && m.id === 'http://local'),
-    `${cls} never offers the base URL as a model id`
-  );
-  assert(
-    !listed.models.some((m) => m && typeof m.id === 'string' && /^https?:/.test(m.id)),
-    `${cls} never offers a URL as a model id`
-  );
-  assert(listed.baseURL === 'http://local', `${cls} reports its base URL for display`);
-}
+// The desktop used to ship five classes (aegis, ollama, openai-compat,
+// anthropic, byok) and a custom-endpoint (baseURL) lane. Only aegis and byok
+// remain. Every entry point must say so rather than borrow another class's
+// wire format, or return an empty model list the renderer paints as a normal
+// "no models" picker — the recurring failure this file's dispatch tail is
+// written against. Both halves are pinned for each removed class: the model
+// list refuses, and the send refuses before any transport is reached.
+for (const cls of ['ollama', 'openai-compat', 'anthropic']) {
+  let listErr = null;
+  try {
+    await engine.listModels(cls);
+  } catch (e) { listErr = e; }
+  assert(listErr && /unknown model class/.test(listErr.message),
+    `${cls} listModels throws loudly, got ${listErr && listErr.message}`);
 
-// A blank/absent model id for a custom class is rejected in-process: the
-// provider transport is never reached, so nothing is fetched upstream.
-for (const cls of ['openai-compat', 'anthropic']) {
-  const seen = [];
-  const guardEngine = createLocalEngine({
-    aegis,
-    settings,
-    ollama,
-    providers: {
-      async openaiCompatible(args) { seen.push(args); return {}; },
-      async anthropicMessages(args) { seen.push(args); return {}; },
-    },
-  });
-  for (const blank of [undefined, null, '', '   ']) {
-    let threw = null;
-    try {
-      await guardEngine.chat({ class: cls, prompt: 'hi', model: blank }, () => {});
-    } catch (err) {
-      threw = err;
-    }
-    assert(threw, `${cls} chat rejects model=${JSON.stringify(blank)}`);
-    assert(
-      /model id is required/.test(threw.message),
-      `${cls} blank-model error is actionable, got "${threw && threw.message}"`
-    );
-  }
-  assert(seen.length === 0, `${cls} blank model never reaches the transport (${seen.length} calls)`);
-}
-
-// ---- defect A through the engine: real transport, one /v1 ------------------
-//
-// End-to-end with the actual providers module and a fetch spy: the configured
-// base URL (which the settings field invites users to paste *with* /v1) must
-// produce exactly one version segment.
-{
-  const req = createRequire(import.meta.url);
-  const realProviders = req('../desktop/lib/local/providers.js');
-
-  const fetched = [];
-  globalThis.fetch = async (url) => {
-    fetched.push(url);
-    // Answer in the wire format the requested endpoint actually speaks. The
-    // Anthropic parser reads `content` blocks (not `choices`), so feeding it
-    // an OpenAI body yields empty text — which the engine now treats as a
-    // failed turn rather than silently passing through.
-    const body = String(url).includes('/v1/messages')
-      ? { model: 'claude-3-5-sonnet', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }
-      : { model: 'gpt-4o-mini', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] };
-    return new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-
-  const cases = [
-    ['openai-compat', 'http://127.0.0.1:8000', 'http://127.0.0.1:8000/v1/chat/completions'],
-    ['openai-compat', 'http://127.0.0.1:8000/v1', 'http://127.0.0.1:8000/v1/chat/completions'],
-    ['openai-compat', 'http://127.0.0.1:8000/v1/', 'http://127.0.0.1:8000/v1/chat/completions'],
-    ['anthropic', 'http://127.0.0.1:8000', 'http://127.0.0.1:8000/v1/messages'],
-    ['anthropic', 'http://127.0.0.1:8000/v1', 'http://127.0.0.1:8000/v1/messages'],
-    ['anthropic', 'http://127.0.0.1:8000/v1/', 'http://127.0.0.1:8000/v1/messages'],
-  ];
-  for (const [cls, baseURL, expected] of cases) {
-    const eng = createLocalEngine({
-      aegis,
-      settings: { get: () => ({ baseURL, configured: true }), rawKey: () => 'k' },
-      ollama,
-      providers: realProviders,
-    });
-    await eng.chat({ class: cls, prompt: 'hi', model: 'gpt-4o-mini' }, () => {});
-    assert(
-      fetched[fetched.length - 1] === expected,
-      `${cls} base "${baseURL}" fetched "${fetched[fetched.length - 1]}", expected "${expected}"`
-    );
-  }
-  const before = fetched.length;
-  const eng = createLocalEngine({
-    aegis,
-    settings: { get: () => ({ baseURL: 'https://api.openai.com/v1', configured: true }), rawKey: () => 'k' },
-    ollama,
-    providers: realProviders,
-  });
-  await eng.chat({ class: 'openai-compat', prompt: 'hi', model: '   ' }, () => {}).catch(() => {});
-  assert(fetched.length === before, 'blank model id never reaches fetch()');
-
-  // ---- the direct-dial gate: a REMOTE base URL never reaches fetch() ------
-  //
-  // providers.js bills nobody — no pooled margin, no BYOK handling fee, no
-  // account key — so a custom class may only carry usage on this machine. The
-  // cases above moved to a loopback host for exactly this reason, and here the
-  // old remote spelling is asserted to be REFUSED before the transport is
-  // reached: the same engine, the same real providers module, zero fetch().
-  for (const [cls, baseURL] of [
-    ['openai-compat', 'https://api.openai.com/v1'],
-    ['anthropic', 'https://api.anthropic.com'],
-    ['openai-compat', 'http://192.168.1.50:1234/v1'], // private is local, sanity
-  ]) {
-    const wasLocal = cls === 'openai-compat' && baseURL.includes('192.168');
-    const gateEng = createLocalEngine({
-      aegis,
-      settings: { get: () => ({ baseURL, configured: true }), rawKey: () => 'k' },
-      ollama,
-      providers: realProviders,
-    });
-    const beforeGate = fetched.length;
-    if (wasLocal) {
-      await gateEng.chat({ class: cls, prompt: 'hi', model: 'm' }, () => {});
-      assert(fetched.length === beforeGate + 1, 'a private LAN address is served on the direct lane');
-      continue;
-    }
-    let err = null;
-    try {
-      await gateEng.chat({ class: cls, prompt: 'hi', model: 'm' }, () => {});
-    } catch (e) {
-      err = e;
-    }
-    assert(err, `${cls} "${baseURL}" must be refused`);
-    assert(err.code === 'CUSTOM_ENDPOINT_NOT_LOCAL', `${cls} refusal carries the policy code, got ${err.code}`);
-    assert(err.status === 400, `${cls} refusal is a 400-class error`);
-    assert(
-      String(err.message).includes(baseURL),
-      `${cls} refusal names the offending URL so the user can fix it`
-    );
-    assert(fetched.length === beforeGate, `${cls} remote base URL never reaches fetch()`);
-  }
-  delete globalThis.fetch;
+  let chatErr = null;
+  try {
+    await engine.chat({ class: cls, prompt: 'hi', model: 'x' }, () => {});
+  } catch (e) { chatErr = e; }
+  assert(chatErr && /unknown model class/.test(chatErr.message),
+    `${cls} chat throws loudly, got ${chatErr && chatErr.message}`);
 }
 
 // ---- no round cap: a long tool-calling turn is never cut off ---------------
@@ -630,8 +521,9 @@ for (const cls of ['openai-compat', 'anthropic']) {
     executeCount += 1;
     return originalExecuteTool(...args);
   };
-  const longHaulProviders = {
-    async openaiCompatible() {
+  const longHaulAegis = {
+    apiKey: 'k',
+    async chatCompletion() {
       dispatchCount += 1;
       if (dispatchCount > TOOL_ROUNDS) {
         return { model: 'x', choices: [{ message: { content: 'final summary' } }] };
@@ -644,14 +536,14 @@ for (const cls of ['openai-compat', 'anthropic']) {
   };
 
   const longHaulEngine = createLocalEngine({
-    aegis,
+    aegis: longHaulAegis,
     settings,
     ollama,
-    providers: longHaulProviders,
+    providers,
     tools: fakeTools,
   });
 
-  const res = await longHaulEngine.chat({ class: 'openai-compat', prompt: 'dig forever', model: 'x' }, () => {});
+  const res = await longHaulEngine.chat({ class: 'aegis', prompt: 'dig forever', model: 'x' }, () => {});
   const text = res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content;
   assert(text === 'final summary', `a long tool-calling turn still gets the final text answer, got ${JSON.stringify(res)}`);
   assert(dispatchCount === TOOL_ROUNDS + 1, `no cap: ran past the old ${OLD_CAP}-round limit (${dispatchCount} dispatches)`);
@@ -695,7 +587,7 @@ const fakeTools = {
   const seen = [];
   let n = 0;
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       n += 1;
       return n === 1
@@ -703,8 +595,8 @@ const fakeTools = {
         : { model: 'x', choices: [{ message: { content: 'recovered answer' }, finish_reason: 'stop' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'what did you find', model: 'x' }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
+  const res = await e.chat({ class: 'aegis', prompt: 'what did you find', model: 'x' }, () => {});
 
   assert(textOf(res) === 'recovered answer', `synthesis pass delivers the answer, got ${JSON.stringify(res)}`);
   assert(seen.length === 2, `exactly one synthesis dispatch (${seen.length})`);
@@ -725,7 +617,7 @@ const fakeTools = {
   const seen = [];
   let n = 0;
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       n += 1;
       if (n === 1) {
@@ -746,8 +638,8 @@ const fakeTools = {
       return { model: 'x', choices: [{ message: { content: 'summarised findings' }, finish_reason: 'stop' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'research the repo', model: 'x' }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
+  const res = await e.chat({ class: 'aegis', prompt: 'research the repo', model: 'x' }, () => {});
 
   assert(textOf(res) === 'summarised findings', `empty final round is rescued, got ${JSON.stringify(res)}`);
   assert(seen.length === 3, `one tool round + one empty round + one synthesis (${seen.length})`);
@@ -764,7 +656,7 @@ const fakeTools = {
   const seen = [];
   let n = 0;
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       n += 1;
       return n === 1
@@ -772,8 +664,8 @@ const fakeTools = {
         : { model: 'x', choices: [{ message: { content: 'after doubling' }, finish_reason: 'stop' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
+  const res = await e.chat({ class: 'aegis', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
 
   assert(textOf(res) === 'after doubling', `truncated turn recovers, got ${JSON.stringify(res)}`);
   assert(seen.length === 2, `one truncation retry (${seen.length})`);
@@ -786,13 +678,13 @@ const fakeTools = {
 {
   const seen = [];
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       return { model: 'x', choices: [{ message: { content: 'partial answer' }, finish_reason: 'length' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
+  const res = await e.chat({ class: 'aegis', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
 
   assert(textOf(res) === 'partial answer', `truncated text is returned as-is, got ${JSON.stringify(res)}`);
   assert(seen.length === 1, `no retry when text already arrived (${seen.length})`);
@@ -803,15 +695,15 @@ const fakeTools = {
 {
   const seen = [];
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       return { model: 'x', choices: [{ message: { content: '' }, finish_reason: 'length' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
   let threw = null;
   try {
-    await e.chat({ class: 'openai-compat', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
+    await e.chat({ class: 'aegis', prompt: 'q', model: 'x', maxTokens: 4096 }, () => {});
   } catch (err) {
     threw = err;
   }
@@ -827,13 +719,13 @@ const fakeTools = {
 {
   const seen = [];
   const prov = {
-    async openaiCompatible(args) {
+    async chatCompletion(args) {
       seen.push(snapDispatch(args));
       return { model: 'x', choices: [{ message: { content: '' }, finish_reason: 'stop' }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: fakeTools });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'q', model: 'x', tools: false }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: fakeTools });
+  const res = await e.chat({ class: 'aegis', prompt: 'q', model: 'x', tools: false }, () => {});
   assert(textOf(res) === '', 'tools:false single-shot turn is unchanged');
   assert(seen.length === 1, `no synthesis dispatch when tools are opted out (${seen.length})`);
 }
@@ -857,7 +749,7 @@ const fakeTools = {
   };
   let n = 0;
   const prov = {
-    async openaiCompatible() {
+    async chatCompletion() {
       n += 1;
       if (n === 1) {
         return {
@@ -879,7 +771,7 @@ const fakeTools = {
   {
     n = 0;
     execCalls.length = 0;
-    const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: mutatingTools });
+    const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools });
     let approvalId = null;
     const onDelta = (chunk) => {
       if (chunk && chunk.approval) {
@@ -888,7 +780,7 @@ const fakeTools = {
         e.respondApproval(approvalId, 'once');
       }
     };
-    const res = await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x' }, onDelta);
+    const res = await e.chat({ class: 'aegis', prompt: 'do it', model: 'x' }, onDelta);
     assert(textOf(res) === 'done', `answer arrives once approved, got ${JSON.stringify(res)}`);
     assert(approvalId, 'an approval chunk was sent for the mutating call');
     assert(execCalls.length === 1 && execCalls[0] === 'poke', `tool ran exactly once after approval (${JSON.stringify(execCalls)})`);
@@ -900,10 +792,10 @@ const fakeTools = {
     execCalls.length = 0;
     const deltas = [];
     const e = createLocalEngine({
-      aegis, settings, ollama, providers: prov, tools: mutatingTools,
+      aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools,
       getConfirmMode: () => false,
     });
-    const res = await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x' }, (chunk) => deltas.push(chunk));
+    const res = await e.chat({ class: 'aegis', prompt: 'do it', model: 'x' }, (chunk) => deltas.push(chunk));
     assert(textOf(res) === 'done', `answer arrives without approval, got ${JSON.stringify(res)}`);
     assert(!deltas.some((c) => c && c.approval), 'confirm mode off sends no approval chunk');
     assert(execCalls.length === 1 && execCalls[0] === 'poke', `tool still runs exactly once (${JSON.stringify(execCalls)})`);
@@ -934,7 +826,7 @@ const fakeTools = {
   // regression is distinguishable from a real sum.
   let round = 0;
   const usageProviders = {
-    async anthropicMessages() {
+    async chatCompletion() {
       round += 1;
       const usage = {
         input_tokens: 100 * round,
@@ -960,9 +852,9 @@ const fakeTools = {
   };
 
   const usageEngine = createLocalEngine({
-    aegis, settings, ollama, providers: usageProviders, tools: usageTools,
+    aegis: { ...aegis, chatCompletion: usageProviders.chatCompletion }, settings, ollama, tools: usageTools,
   });
-  const res = await usageEngine.chat({ class: 'anthropic', prompt: 'work', model: 'claude-x' }, () => {});
+  const res = await usageEngine.chat({ class: 'aegis', prompt: 'work', model: 'claude-x' }, () => {});
   assert(textOf(res) === 'final summary', `turn completed, got ${JSON.stringify(res)}`);
   // Round r reports 100r/10r tokens; the turn runs ROUNDS tool rounds plus the
   // answering pass, so the totals are the sums over r = 1..ROUNDS+1.
@@ -987,7 +879,7 @@ const fakeTools = {
 // printable total, because the accumulator derives one.
 {
   const splitOnly = {
-    async anthropicMessages() {
+    async chatCompletion() {
       return {
         model: 'x',
         choices: [{ message: { content: 'done' } }],
@@ -995,8 +887,8 @@ const fakeTools = {
       };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: splitOnly });
-  const res = await e.chat({ class: 'anthropic', prompt: 'hi', model: 'claude-x', tools: false }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: splitOnly.chatCompletion }, settings, ollama });
+  const res = await e.chat({ class: 'aegis', prompt: 'hi', model: 'claude-x', tools: false }, () => {});
   assert(
     res.usage.total_tokens === 300,
     `total derived from input+output, got ${JSON.stringify(res.usage)}`
@@ -1007,12 +899,12 @@ const fakeTools = {
 // stay unknown rather than being summed into a confident "0 tokens".
 {
   const mute = {
-    async anthropicMessages() {
+    async chatCompletion() {
       return { model: 'x', choices: [{ message: { content: 'done' } }] };
     },
   };
-  const e = createLocalEngine({ aegis, settings, ollama, providers: mute });
-  const res = await e.chat({ class: 'anthropic', prompt: 'hi', model: 'claude-x', tools: false }, () => {});
+  const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: mute.chatCompletion }, settings, ollama });
+  const res = await e.chat({ class: 'aegis', prompt: 'hi', model: 'claude-x', tools: false }, () => {});
   assert(res.usage === undefined, `no reported usage stays absent, got ${JSON.stringify(res.usage)}`);
 }
 
@@ -1084,7 +976,7 @@ const fakeTools = {
         n = 0;
         seen.length = 0;
       },
-      async openaiCompatible(args) {
+      async chatCompletion(args) {
         seen.push(args);
         n += 1;
         if (n <= 2) {
@@ -1103,9 +995,9 @@ const fakeTools = {
 
   {
     const prov = retrying();
-    const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: mutatingTools });
+    const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools });
     const cards = [];
-    const res = await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-deny' },
+    const res = await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-deny' },
       (chunk) => {
         if (chunk && chunk.approval) {
           cards.push(chunk.approval);
@@ -1129,7 +1021,7 @@ const fakeTools = {
     prov.reset();
     execCalls.length = 0;
     const after = [];
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-deny' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-deny' },
       (chunk) => {
         if (chunk && chunk.approval) {
           after.push(chunk.approval);
@@ -1143,13 +1035,13 @@ const fakeTools = {
   // unaffected by another thread's refusal.
   {
     const prov = retrying();
-    const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: mutatingTools });
+    const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools });
     const cards = [];
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-a' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-a' },
       (chunk) => { if (chunk && chunk.approval) { cards.push(chunk.approval.id); e.respondApproval(chunk.approval.id, 'deny'); } });
     const other = [];
     prov.reset();
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-b' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-b' },
       (chunk) => {
         if (chunk && chunk.approval) {
           other.push(chunk.approval.id);
@@ -1166,14 +1058,14 @@ const fakeTools = {
     let confirm = true;
     const prov = retrying();
     const e = createLocalEngine({
-      aegis, settings, ollama, providers: prov, tools: mutatingTools,
+      aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools,
       getConfirmMode: () => confirm,
     });
     // execCalls is shared across every block in this file; the previous
     // conversation answered 'once' and left a call behind. Clear it so this
     // assertion measures THIS block, not the last one.
     execCalls.length = 0;
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-off' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-off' },
       (chunk) => { if (chunk && chunk.approval) e.respondApproval(chunk.approval.id, 'deny'); });
     assert(execCalls.length === 0, 'refused while the gate is up');
     confirm = false;
@@ -1183,7 +1075,7 @@ const fakeTools = {
     // emits a call, so a green assertion here would prove nothing.
     prov.reset();
     let gateCards = 0;
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-off' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-off' },
       (chunk) => { if (chunk && chunk.approval) gateCards += 1; });
     assert(gateCards === 0, 'with confirm mode off no card is raised');
     assert(execCalls.length >= 1, `confirm mode off runs the tool despite the earlier denial (${execCalls.length})`);
@@ -1194,9 +1086,9 @@ const fakeTools = {
   // or a cancelled turn would silently forbid a tool forever.
   {
     const prov = retrying();
-    const e = createLocalEngine({ aegis, settings, ollama, providers: prov, tools: mutatingTools });
+    const e = createLocalEngine({ aegis: { ...aegis, chatCompletion: prov.chatCompletion }, settings, ollama, tools: mutatingTools });
     const first = [];
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-cancel' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-cancel' },
       (chunk) => {
         if (chunk && chunk.approval) {
           first.push(chunk.approval.id);
@@ -1208,7 +1100,7 @@ const fakeTools = {
     // Same stalled-stub trap: reset so the retry turn actually reaches a tool
     // call. Zero cards here would otherwise pass for the wrong reason.
     prov.reset();
-    await e.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId: 's-cancel' },
+    await e.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId: 's-cancel' },
       (chunk) => { if (chunk && chunk.approval) { again.push(chunk.approval.id); e.respondApproval(chunk.approval.id, 'deny'); } });
     assert(again.length === 1,
       `an unanswered request is not remembered as a denial (got ${again.length} cards on the retry)`);
@@ -1257,12 +1149,18 @@ const fakeTools = {
 
   // A turn with no key stored for the chosen provider must refuse before ever
   // reaching the relay — an unconfigured class silently calling the relay
-  // with providerKey: undefined is exactly the old "undefined" defect.
+  // with providerKey: undefined is exactly the old "undefined" defect. The
+  // message names the provider AND the cheapest way out (/class aegis), because
+  // "byok is unconfigured" without a next step is what made this read as an
+  // outage rather than a setup gap.
   let refused = null;
   try {
     await eng.chat({ class: 'byok', model: 'anthropic:claude-sonnet-5', prompt: 'hi' }, () => {});
   } catch (e) { refused = e; }
-  assert(refused && /no key saved/.test(refused.message), `unconfigured provider is refused, got ${refused && refused.message}`);
+  assert(refused && /No key for "anthropic"/.test(refused.message),
+    `unconfigured provider is refused, got ${refused && refused.message}`);
+  assert(refused && /\/class aegis/.test(refused.message),
+    `the refusal names the no-setup alternative, got ${refused && refused.message}`);
   assert(byokCalls.length === 0, 'the relay is never called for an unconfigured provider');
 
   // Saving a key through the SAME generic settings surface openai-compat/
@@ -1342,7 +1240,11 @@ const fakeTools = {
   } catch (e) { refusedByok = e; }
   assert(refusedByok, 'a keyless byok send is refused');
   assert(refusedByok.status === 401, `refused as unauthenticated, got status ${refusedByok.status}`);
-  assert(/account key/.test(refusedByok.message), `the refusal names the fix, got ${refusedByok.message}`);
+  assert(/AEGIS key/.test(refusedByok.message), `the refusal names the missing key, got ${refusedByok.message}`);
+  assert(/\/login/.test(refusedByok.message),
+    `and names the command that supplies it, got ${refusedByok.message}`);
+  assert(/\/class aegis/.test(refusedByok.message),
+    `and the no-BYOK alternative, got ${refusedByok.message}`);
   assert(relayed.length === 0, 'and the relay is never reached, so no unattributed (unbilled) turn goes out');
 
   // Same engine, same provider key, account key connected: the turn is

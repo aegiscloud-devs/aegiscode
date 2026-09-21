@@ -109,6 +109,12 @@ live**, not by which is cheaper.
 | CLI | `/byok-set anthropic` | `/byok-key anthropic` |
 | Desktop | Settings → provider row | Settings → provider row |
 
+For the machine-key lane the simplest path is to put the key in
+`~/.aegiscode/.env` (`ANTHROPIC_API_KEY=…`, `OPENAI_API_KEY=…`): the MCP server,
+the CLI and the desktop app all read that file into the environment at startup.
+`/byok-key` (CLI) and the desktop's Settings pane remain alternative paths that
+write the encrypted per-provider store instead.
+
 `aegis_ask` normally spends from your AEGIS token bank. Lane A replaces the
 *provider credential* with yours; the request still runs through AEGIS, so your
 account is charged a small **BYOK handling fee** — a flat rate, not a margin on
@@ -176,8 +182,9 @@ Under `byok` every model id is compound — `provider:model`, e.g.
 unlock, and `/class` refuses to leave you on a class with no key rather than
 failing later at the relay. A BYOK turn is **single-shot**: the relay takes no
 `tools` parameter, so the agentic tool loop is off by construction, not by
-preference. Ollama, LM Studio and any custom endpoint are desktop-only classes —
-the CLI deliberately exposes two.
+preference. The two hosts ship the same two classes: the local-endpoint routes
+that used to exist here (Ollama, LM Studio and custom endpoints) have been
+removed from the product.
 
 It carries the `aegiscodex-dev` design — palette, welcome art, prompt glyphs and
 command vocabulary — pinned by `test/cli-conformance.test.mjs`; `test/cli-render.test.mjs`,
@@ -221,14 +228,12 @@ shortcuts and deep-link reference: [`desktop/README.md`](desktop/README.md).
 
 ### Model classes
 
-Pick any of four transports from the model-class picker:
+Pick either of two routes from the model-class picker:
 
 | Class | Transport | Key held in |
 |---|---|---|
 | **Aegis Cloud** | `aegiscloud.org` (pooled or pinned model) | main process |
-| **Ollama** | local `ollama` daemon | no key needed |
-| **Custom OpenAI-compatible** (LM Studio, OpenRouter, vLLM, …) | direct from the desktop app | main process — never sent to the renderer |
-| **Anthropic-compatible** (Claude, or any Messages-format gateway) | direct from the desktop app | main process |
+| **Bring your own key** (BYOK) | your provider key, relayed by AEGIS | main process — never sent to the renderer |
 
 Conversations persist locally to `~/.aegiscode/sessions.json` — the same file
 the CLI and the MCP plugin read, so a thread typed in the terminal shows up in
@@ -329,7 +334,7 @@ const aegis = require('./client/aegis.js');   // Node
 | `/aegis-status` shows no memory | Cloud memory needs a plan with memory enabled; free accounts are capped at 3 memory sessions. |
 | Saved a memory on one machine, can't find it on another | Confirm both machines use the same AEGIS key, then run `/aegis-status` to force a sync. |
 | Plugin commands missing after install | Restart Claude Code. If they're still missing, re-run `/plugin install aegiscode@aegiscode`. |
-| Desktop app starts but has no models listed | Configure a model class in the picker, or add your Anthropic / OpenAI-compatible key under settings. |
+| Desktop app starts but has no models listed | Pick a model class in the picker; if a BYOK provider shows no models, set its key under Settings or in `~/.aegiscode/.env`. |
 
 ---
 
@@ -343,7 +348,7 @@ in the private `ae-guix` product).
 |---|---|---|
 | **Shared thin client** | `client/aegis.js` | Zero-dependency transport to `aegiscloud.org`. The only code in this repo that talks to the backend; runs unchanged under Node (MCP + Electron) and in a browser. |
 | **Claude Code plugin** | `mcp/`, `commands/`, `skills/`, `install.sh`, `.claude-plugin/` | Slash commands + MCP tools inside Claude Code. **Cloud-only** — Claude Code already runs inside a host with its own models. |
-| **AEGIS Desktop** | `desktop/` | Standalone Electron chat app with the four-class model picker, streaming, an agentic tool loop, and cloud sync. Runs without Claude Code. |
+| **AEGIS Desktop** | `desktop/` | Standalone Electron chat app with the two-class model picker, streaming, an agentic tool loop, and cloud sync. Runs without Claude Code. |
 
 ### Repository layout
 

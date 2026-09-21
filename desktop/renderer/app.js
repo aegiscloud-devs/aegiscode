@@ -80,8 +80,6 @@ const ELEMENT_IDS = {
   apiKeyHint: 'api-key-hint',
   classSelect: 'class-select',
   modelSelect: 'model-select',
-  modelPreset: 'model-preset',
-  modelInput: 'model-input',
   budgetHint: 'budget-hint',
   autonomousToggle: 'autonomous-toggle',
   autonomousToggleWrap: 'autonomous-toggle-wrap',
@@ -164,56 +162,12 @@ const EXPLORE_KEY = 'aegis.explore';
 // "Work autonomously" (pool_brain worker fan-out, aegis1 services/pool_brain.py)
 // is only billable/routable through the pooled AEGIS Cloud class.
 const AUTONOMOUS_CLASS = 'aegis';
-const CUSTOM_CLASSES = new Set(['openai-compat', 'anthropic']);
-// Custom classes currently holding a base URL the engine refuses (not local).
-// Tracked so the UI can explain the dead class, and so a preset click may
-// REPLACE the refused URL — applyCustomPreset otherwise never clobbers a
-// configured endpoint, which would leave a blocked row unfixable by click.
-const blockedCustomClasses = new Set();
-// Placeholders for the typed model-id field: custom endpoints enumerate
-// nothing, so the field has to say what a valid id looks like. The examples
-// are local-server ids — a hosted model id here would advertise a route this
-// class no longer has (see the preset note below).
-const MODEL_ID_PLACEHOLDER = {
-  'openai-compat': 'type a model id — e.g. llama3.2',
-  anthropic: 'type a model id — e.g. claude-3-5-sonnet',
-};
-// Quick-fill presets for the two custom-endpoint classes — model id + the
-// base URL it actually lives at, since typing the right model string is only
-// half the problem (the wrong base URL 400s just as hard).
-//
-// EVERY base URL HERE IS LOCAL, AND THAT IS THE POLICY, NOT AN OMISSION.
-// These two classes are the free direct lane: aegiscode dials the base URL
-// itself, so a remote one would be a model nobody bills. desktop/lib/local/
-// endpoints.js refuses a non-local base URL for both of them, at the settings
-// store (so the row cannot be created) and again at dispatch (so a row hand
-// edited onto disk cannot be dialed). The hosted providers that used to be
-// listed here — OpenAI, Anthropic, Gemini, and DeepSeek (whose live ids,
-// served over DeepSeek's Anthropic-Messages transport, are `deepseek-flash`
-// and `deepseek-v4-pro`) — are all in the relay's BYOK catalog, so their
-// correct home is now the **Bring your own key** class, which bills the flat
-// handling fee. Adding one back here would revive a route that is refused on
-// save.
-//
-// The two transports stay distinct because wire format is not inferable from
-// a local URL: `openai-compat` posts /chat/completions, `anthropic` posts the
-// Messages API. A given local server answers one of them, so pick the class
-// that matches what it serves. A preset's model id is what gets pinned, and
-// for a local server that id is whatever *you* loaded — the ids below are the
-// servers' own conventional defaults, and the field still invites your own.
-const CUSTOM_MODEL_PRESETS = {
-  'openai-compat': [
-    { label: 'Ollama (OpenAI-compatible shim)', baseURL: 'http://127.0.0.1:11434/v1', model: 'llama3.2' },
-    { label: 'LM Studio', baseURL: 'http://127.0.0.1:1234/v1', model: 'local-model' },
-    { label: 'vLLM', baseURL: 'http://127.0.0.1:8000/v1', model: 'local-model' },
-    { label: 'llama.cpp', baseURL: 'http://127.0.0.1:8080/v1', model: 'local-model' },
-  ],
-  anthropic: [
-    // Anything local that speaks the Anthropic Messages API — a LiteLLM
-    // proxy, claude-code-router, or a gateway on your own LAN.
-    { label: 'LiteLLM proxy (Messages API)', baseURL: 'http://127.0.0.1:4000', model: 'local-model' },
-  ],
-};
+// The three custom-endpoint classes (openai-compat, anthropic, ollama) and
+// their entire UI affordance — the typed model-id field, its placeholder table
+// and the local-endpoint quick-fill presets — are gone. Only `aegis` (pooled
+// Aegis Cloud) and `byok` (bring your own provider key) ship, and both
+// enumerate their models through the engine, so the model picker is the only
+// model input this card needs. See desktop/lib/local/engine.js CLASSES.
 // The in-app AEGIS key is stored in a reserved namespace the main process
 // already filters out of settings.list(); never render it as a provider row
 // even if a stale store still surfaces it (defect #1).
@@ -519,21 +473,21 @@ function updateAutonomousControlsVisibility() {
 
 // Which models get their budget from the Effort rung — because they reason
 // against their own output limit (DeepSeek counts hidden chain-of-thought
-// against the same budget as the answer) or because their wire format requires
-// the field at all (Anthropic's Messages API) — is answered in ONE place:
+// against the same budget as the answer) — is answered in ONE place:
 // desktop/renderer/budget.js, loaded before this file, whose
-// DEEPSEEK_REASONING_MODEL_RE / REQUIRES_STATED_BUDGET / EFFORT_TOKEN_BUDGET
-// globals are read below. test/budget.test.mjs asserts that copy and
-// desktop/lib/local/engine.js answer identically, so neither can drift.
+// DEEPSEEK_REASONING_MODEL_RE / EFFORT_TOKEN_BUDGET globals are read below.
+// test/budget.test.mjs asserts that copy and desktop/lib/local/engine.js
+// answer identically, so neither can drift.
 
 /**
- * The model id the budget control has to reason about right now: the typed id
- * for a custom endpoint, the picker's value everywhere else.
+ * The model id the budget control has to reason about right now.
+ *
+ * One source now: the picker. The typed field this used to read for a custom
+ * endpoint went with those classes — and with it the only path by which
+ * `budgetFor()` could be asked about an id the engine never listed.
  */
 function currentBudgetModel() {
-  return CUSTOM_CLASSES.has(els.classSelect.value)
-    ? els.modelInput.value.trim()
-    : els.modelSelect.value;
+  return els.modelSelect.value;
 }
 
 /**
@@ -559,7 +513,7 @@ function budgetNote(cls, model) {
     return `budget: ${totals[rung].toLocaleString()} tokens from effort (${rungText}), ` +
       'summed across the worker fan-out by the Aegis Cloud pool — no max_tokens is sent.';
   }
-  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || '')) || REQUIRES_STATED_BUDGET.has(cls)) {
+  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || ''))) {
     const tokens = EFFORT_TOKEN_BUDGET[rung];
     return `budget: ${tokens.toLocaleString()} tokens from effort (${rungText}) — ` +
       'this model reasons against its own output budget, and the length of the answer ' +
@@ -2569,103 +2523,9 @@ async function loadModels(cls) {
   updateAutonomousControlsVisibility();
   updateBudgetControls(cls);
 
-  const custom = CUSTOM_CLASSES.has(cls);
-  els.modelSelect.hidden = custom;
-  els.modelSelect.disabled = custom;
-  els.modelInput.hidden = !custom;
-  els.modelInput.disabled = !custom;
-  els.modelPreset.hidden = true;
+  els.modelSelect.hidden = false;
+  els.modelSelect.disabled = false;
   els.modelHint.textContent = '';
-
-  if (custom) {
-    modelMeta = new Map();
-    let cfg = { baseURL: '', configured: false, keyMask: null };
-    try {
-      const settings = (await models.settings.get()) || [];
-      cfg = (Array.isArray(settings) && settings.find((s) => s.provider === cls)) || cfg;
-    } catch {
-      /* settings unavailable — leave hint below */
-    }
-    // The engine lists no models for a custom endpoint: the only usable id is
-    // one the user types (it used to offer the base URL as an id, which POSTed
-    // `model: "<url>"` and 400'd upstream). `needsModelId` is what turns this
-    // into an explicit "type a model id" prompt rather than an empty picker.
-    let needsModelId = true;
-    // A row whose stored base URL is not local is refused by the engine — at
-    // storage, at dispatch, and here. This is the here: without the reason the
-    // class just looks armed and then fails on send, so capture it from the
-    // same call that reports `needsModelId` and show it in place of the
-    // endpoint line. It is recoverable by design — the text says how.
-    let blockedReason = '';
-    try {
-      const data = await models.listModels(cls);
-      if (data && typeof data.needsModelId === 'boolean') needsModelId = data.needsModelId;
-      if (data && typeof data.blockedReason === 'string' && data.blockedReason) {
-        blockedReason = data.blockedReason;
-      }
-      // Track the refusal against the class itself: applyCustomPreset() reads
-      // this set to know that the row's stored endpoint is dead and may be
-      // replaced by a click. A class that lists without a reason is cleared
-      // again, so the replacement exception never widens past rows the engine
-      // is actually refusing.
-      if (blockedReason) blockedCustomClasses.add(cls);
-      else blockedCustomClasses.delete(cls);
-      if (data && typeof data.baseURL === 'string' && data.baseURL) {
-        cfg = { ...cfg, baseURL: data.baseURL };
-      }
-      const list = Array.isArray(data && data.models) ? data.models : [];
-      if (list.length) {
-        // A custom class that does enumerate models (a future provider) still
-        // gets a picker; the typed input is only for the unlistable case.
-        needsModelId = false;
-        els.modelSelect.hidden = false;
-        els.modelSelect.disabled = false;
-        els.modelInput.hidden = true;
-        els.modelInput.disabled = true;
-        els.modelSelect.innerHTML = '';
-        for (const m of list) {
-          modelMeta.set(m.id, m);
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = m.label || m.id;
-          els.modelSelect.appendChild(opt);
-        }
-      }
-    } catch {
-      /* engine unavailable — fall back to settings + the typed input */
-    }
-    // Quick-fill presets only make sense while the id is still hand-typed —
-    // a class that starts enumerating real models (needsModelId false) gets
-    // a proper picker above instead, so the preset list would be redundant.
-    const presets = needsModelId ? CUSTOM_MODEL_PRESETS[cls] || [] : [];
-    els.modelPreset.hidden = presets.length === 0;
-    if (presets.length) {
-      els.modelPreset.innerHTML = '';
-      const placeholder = document.createElement('option');
-      placeholder.value = '';
-      placeholder.textContent = 'quick pick…';
-      placeholder.disabled = true;
-      placeholder.selected = true;
-      els.modelPreset.appendChild(placeholder);
-      for (const preset of presets) {
-        const opt = document.createElement('option');
-        opt.value = preset.model;
-        opt.textContent = preset.label;
-        opt.title = preset.baseURL;
-        els.modelPreset.appendChild(opt);
-      }
-    }
-    els.modelInput.placeholder = needsModelId
-      ? MODEL_ID_PLACEHOLDER[cls] || 'type a model id'
-      : 'model id';
-    els.modelHint.textContent = blockedReason
-      ? blockedReason
-      : cfg.baseURL
-        ? `endpoint: ${cfg.baseURL} · key: ${cfg.configured ? cfg.keyMask : 'not set'}` +
-          (needsModelId ? ' · type a model id above' : '')
-        : 'Set base URL + key in Provider settings, then type a model id.';
-    return;
-  }
 
   els.modelSelect.innerHTML = '';
   modelMeta = new Map();
@@ -2695,7 +2555,7 @@ async function loadModels(cls) {
     if (needsKey) {
       hint = null; // carries a link, built below
     } else if (!list.length) {
-      hint = cls === 'ollama' ? 'Ollama not running or no models pulled.' : 'No models listed.';
+      hint = 'No models listed.';
     } else if (cls === 'byok' && data && data.needsAegisKey) {
       // Enforced by this CLIENT, not by the server, so it no longer waits on
       // the server's fee.require_balance flag (off by default): the shared
@@ -2741,75 +2601,27 @@ async function loadModels(cls) {
   }
 }
 
-/**
- * Quick-fill a Model-card preset: sets the typed model id, and fills the
- * matching Provider-settings base URL field IF it's currently empty. An
- * already-configured base URL is left alone (never silently overwritten) —
- * if it doesn't match what the preset expects, the hint says so instead, so
- * the user's own custom endpoint can't be clobbered by a stray click.
- *
- * The one exception is a BLOCKED row: when the engine refuses the stored
- * endpoint (non-local — see blockedCustomClasses), there is nothing left to
- * preserve, so the preset URL overwrites the field unconditionally. Without
- * that, the local-only policy would leave the row unfixable by click; the
- * hint then tells the user to Save so the replacement is actually stored.
- */
-function applyCustomPreset(cls, modelId) {
-  const preset = (CUSTOM_MODEL_PRESETS[cls] || []).find((p) => p.model === modelId);
-  if (!preset) return;
-  els.modelInput.value = preset.model;
-  // The id just changed, so the budget note may have to as well: DeepSeek —
-  // Flash 4.1 is sized by the Effort rung (budget.js), which is a different
-  // statement than the one for a plain OpenAI-compatible id.
-  updateBudgetControls(cls);
-
-  const row = els.settingsList.querySelector(`.setting-row[data-provider="${cls}"]`);
-  const baseInput = row && row.querySelector('.setting-base');
-  if (!baseInput) return;
-
-  // Which branch applies (fill / refuse-to-clobber / repair a blocked row) is
-  // preset-fill.js's decision, unit-tested there. This function only writes
-  // what it returns — `null` on either field means leave it as it is.
-  const plan = planPresetFill({
-    preset,
-    current: baseInput.value.trim(),
-    blocked: blockedCustomClasses.has(cls),
-  });
-  if (plan.baseURL !== null) baseInput.value = plan.baseURL;
-  if (plan.hint !== null) els.modelHint.textContent = plan.hint;
-}
 
 // -------------------------------------------------------------- settings pane
 
 /**
- * One provider-settings row: name, an optional base-URL field, a key input,
- * a status label and Save/Remove buttons wired to the generic
- * `models.settings.*` surface. Shared by the two custom endpoints (which
- * need a base URL) and the byok providers (which do not — the server
- * dictates the endpoint; only the key is theirs to set).
+ * One provider-settings row: name, a key input, a status label and
+ * Save/Remove buttons wired to the generic `models.settings.*` surface.
+ *
+ * No base-URL field: the only surviving rows are `byok:<provider>`, and byok
+ * always talks to AEGIS's own relay, so the endpoint is the server's to
+ * dictate — only the key is the user's to set. The classes that did carry a
+ * user URL (the direct-dial ones) are gone.
  */
-function buildSettingRow({ provider, name, cfg, showBaseURL, onSave, onRemove }) {
+function buildSettingRow({ provider, name, cfg, onSave, onRemove }) {
   const row = document.createElement('div');
   row.className = 'setting-row';
-  // Targeted by applyCustomPreset() so picking a Model-card preset can
-  // quick-fill the matching base URL here without a full loadSettings()
-  // round trip.
   row.dataset.provider = provider;
 
   const label = document.createElement('div');
   label.className = 'setting-name';
   label.textContent = name;
   row.appendChild(label);
-
-  let baseInput = null;
-  if (showBaseURL) {
-    baseInput = document.createElement('input');
-    baseInput.type = 'text';
-    baseInput.className = 'setting-input setting-base';
-    baseInput.placeholder = 'base URL';
-    baseInput.value = cfg.baseURL || '';
-    row.appendChild(baseInput);
-  }
 
   const keyInput = document.createElement('input');
   keyInput.type = 'password';
@@ -2831,7 +2643,7 @@ function buildSettingRow({ provider, name, cfg, showBaseURL, onSave, onRemove })
   saveBtn.type = 'button';
   saveBtn.className = 'ghost-btn';
   saveBtn.textContent = 'Save';
-  saveBtn.addEventListener('click', () => onSave(baseInput ? baseInput.value.trim() : '', keyInput.value));
+  saveBtn.addEventListener('click', () => onSave(keyInput.value));
   actions.appendChild(saveBtn);
 
   const removeBtn = document.createElement('button');
@@ -2858,25 +2670,6 @@ async function loadSettings() {
     settings = settings.filter((s) => s && !RESERVED_PROVIDERS.has(s.provider));
   }
 
-  const providers = [
-    { provider: 'openai-compat', name: 'OpenAI-compatible' },
-    { provider: 'anthropic', name: 'Anthropic-compatible' },
-  ];
-
-  for (const { provider, name } of providers) {
-    const cfg = settings.find((s) => s.provider === provider) || {
-      provider,
-      baseURL: '',
-      configured: false,
-      keyMask: null,
-    };
-    els.settingsList.appendChild(buildSettingRow({
-      provider, name, cfg, showBaseURL: true,
-      onSave: (baseURL, key) => saveSetting(provider, baseURL, key),
-      onRemove: () => removeSetting(provider),
-    }));
-  }
-
   // byok: one row per provider the server's catalog names (GET
   // /api/v1/byok/providers via the engine's listModels('byok')), not a fixed
   // pair like the two custom endpoints above — the catalog is the source of
@@ -2895,8 +2688,8 @@ async function loadSettings() {
         provider, baseURL: '', configured: false, keyMask: null,
       };
       els.settingsList.appendChild(buildSettingRow({
-        provider, name: `BYOK: ${p.label || p.id}`, cfg: local, showBaseURL: false,
-        onSave: (_baseURL, key) => saveSetting(provider, '', key),
+        provider, name: `BYOK: ${p.label || p.id}`, cfg: local,
+        onSave: (key) => saveSetting(provider, key),
         onRemove: () => removeSetting(provider),
       }));
     }
@@ -2924,20 +2717,16 @@ async function loadSettings() {
       els.settingsList.appendChild(note);
     }
   } catch {
-    /* catalog unreachable (offline, server down) — the two custom rows above still work */
+    /* catalog unreachable (offline, server down) — no rows, and the hint above says why */
   }
 }
 
-async function saveSetting(provider, baseURL, key) {
+async function saveSetting(provider, key) {
   els.settingsHint.textContent = 'saving…';
   try {
-    const cfg = { baseURL };
+    const cfg = {};
     if (key) cfg.key = key;
     await models.settings.set(provider, cfg);
-    // Stored: whatever the engine refused is gone, so drop the blocked mark
-    // and let loadModels() below re-establish it from the fresh refusal (if
-    // any). Replacing a refused endpoint is exactly what unblocks the row.
-    blockedCustomClasses.delete(provider);
     els.settingsHint.textContent = 'saved.';
     await loadSettings();
     await loadModels(els.classSelect.value);
@@ -2951,8 +2740,6 @@ async function removeSetting(provider) {
   els.settingsHint.textContent = 'removing…';
   try {
     await models.settings.remove(provider);
-    // Nothing stored means nothing to refuse; clear the blocked mark too.
-    blockedCustomClasses.delete(provider);
     els.settingsHint.textContent = 'removed.';
     await loadSettings();
     await loadModels(els.classSelect.value);
@@ -3233,17 +3020,7 @@ async function send() {
   if (!prompt || els.send.disabled) return;
 
   const cls = els.classSelect.value;
-  const model = CUSTOM_CLASSES.has(cls)
-    ? els.modelInput.value.trim()
-    : els.modelSelect.value;
-  // A custom endpoint has no default model, and a blank id reaches the
-  // provider as `model: undefined` (defect B). Ask for it instead of sending.
-  if (CUSTOM_CLASSES.has(cls) && !model) {
-    els.modelHint.textContent =
-      MODEL_ID_PLACEHOLDER[cls] || 'type a model id before sending.';
-    els.modelInput.focus();
-    return;
-  }
+  const model = els.modelSelect.value;
 
   els.prompt.value = '';
   // This turn's identity. Claiming it here — and clearing `stoppedTurn` —
@@ -3255,8 +3032,8 @@ async function send() {
   addMessage('user', prompt);
 
   // What this request travels with, resolved from ONE authority by budgetFor:
-  // the Effort rung for a model that reasons against its own output budget (or
-  // a class that requires the field), and no `max_tokens` at all otherwise.
+  // the Effort rung for a model that reasons against its own output budget, and
+  // no `max_tokens` at all otherwise.
   // Nothing here guesses an answer's length — the old dropdown asked the user
   // to, and the guess was wrong in both directions: aegis1 sizes the pooled
   // class from `effort` itself and reads a body max_tokens as a ceiling *over*
@@ -3270,7 +3047,7 @@ async function send() {
   // DeepSeek reasoning model needs it to size its CoT. `undefined` = "auto" =
   // the server (or the engine's rung default) infers it.
   const effort = effortFor();
-  const maxTokens = budgetFor(cls, model, undefined, effort);
+  const maxTokens = budgetFor(model, undefined, effort);
   const workers = autonomous ? parseInt(els.autonomousWorkers.value, 10) || undefined : undefined;
   // Reuse the open thread's session id (minted once, on its first message)
   // instead of a fresh one per send — a new id every turn is what made both
@@ -3608,10 +3385,6 @@ async function init() {
     localStorage.setItem(EFFORT_KEY, els.effortSelect.value);
     updateBudgetControls(els.classSelect.value);
   });
-  // A typed model id changes what the rung buys (a DeepSeek reasoning id is
-  // sized by it, a plain OpenAI-compatible one sends no cap at all), so the
-  // note has to follow the keystrokes rather than wait for a class change.
-  els.modelInput.addEventListener('input', () => updateBudgetControls(els.classSelect.value));
   // Worker count for the fan-out. Left empty by default on purpose: an empty
   // field is what tells the server to size the fan-out from the ask
   // (parse_brain_request's auto path) instead of the old client-side default of
@@ -3657,10 +3430,6 @@ async function init() {
     els.modelHint.textContent =
       ceiling < FLAT_CEILING ? `${base} · max output: ${ceiling.toLocaleString()}` : base;
     updateBudgetControls(els.classSelect.value);
-  });
-
-  els.modelPreset.addEventListener('change', () => {
-    applyCustomPreset(els.classSelect.value, els.modelPreset.value);
   });
 
   els.newChat.addEventListener('click', newChat);

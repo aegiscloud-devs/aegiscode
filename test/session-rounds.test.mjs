@@ -119,8 +119,6 @@ test('a stated session id outranks cwd and history', () => {
   const requests = [];
   const stubs = () => ({
     settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; } },
-    providers: {},
   });
 
   const neverFinishes = {
@@ -254,8 +252,6 @@ test('an interactive resume restores only the interrupted turn\'s delta', async 
   const requests = [];
   const stubs = () => ({
     settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; } },
-    providers: {},
   });
 
   // Only ever calls a tool, so every turn ends at its horizon rather than

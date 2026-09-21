@@ -218,15 +218,6 @@ function schemaList(includeSubagent) {
   return Object.values(SCHEMAS).filter((s) => includeSubagent || s.name !== SUBAGENT_TOOL);
 }
 
-/** Anthropic Messages API tool definitions ({name, description, input_schema}). */
-function anthropicTools({ includeSubagent = true } = {}) {
-  return schemaList(includeSubagent).map((s) => ({
-    name: s.name,
-    description: s.description,
-    input_schema: s.parameters,
-  }));
-}
-
 /** OpenAI-compatible /chat/completions tool definitions ({type:'function', function}). */
 function openaiTools({ includeSubagent = true } = {}) {
   return schemaList(includeSubagent).map((s) => ({
@@ -236,51 +227,14 @@ function openaiTools({ includeSubagent = true } = {}) {
 }
 
 /**
- * The advertised tool list for one wire format. `wire` is 'anthropic' or
- * anything else (treated as OpenAI-compatible) — the same split the transport
- * layer uses. `includeSubagent: false` drops the task tool (subagent depth cap).
+ * The advertised tool list. There is exactly ONE wire format now — every turn
+ * goes through the AEGIS relay, which speaks the OpenAI shape — so this takes
+ * no `wire` argument. The Anthropic-shaped variant went away with the
+ * direct-dial transport. `includeSubagent: false` drops the task tool
+ * (subagent depth cap).
  */
-function toolsFor(wire, { includeSubagent = true } = {}) {
-  return wire === 'anthropic' ? anthropicTools({ includeSubagent }) : openaiTools({ includeSubagent });
-}
-
-/**
- * Convert an OpenAI-format tool list into Anthropic's. Exported because it is
- * the exact transformation the loop depends on (and it is unit-tested as
- * such): an endpoint that speaks Anthropic must never be handed
- * `{type:'function', function:{…}}`.
- */
-function openaiToAnthropicTools(tools) {
-  if (!Array.isArray(tools)) return [];
-  return tools
-    .map((t) => {
-      const fn = (t && t.function) || t || {};
-      if (!fn.name) return null;
-      return {
-        name: fn.name,
-        description: fn.description || '',
-        input_schema: fn.parameters || { type: 'object', properties: {} },
-      };
-    })
-    .filter(Boolean);
-}
-
-/** Reverse projection (Anthropic → OpenAI), for symmetry/completeness. */
-function anthropicToOpenaiTools(tools) {
-  if (!Array.isArray(tools)) return [];
-  return tools
-    .map((t) => {
-      if (!t || !t.name) return null;
-      return {
-        type: 'function',
-        function: {
-          name: t.name,
-          description: t.description || '',
-          parameters: t.input_schema || { type: 'object', properties: {} },
-        },
-      };
-    })
-    .filter(Boolean);
+function toolsFor({ includeSubagent = true } = {}) {
+  return openaiTools({ includeSubagent });
 }
 
 // ── Executors ───────────────────────────────────────────────────────────────
@@ -840,11 +794,8 @@ module.exports = {
   SCHEMAS,
   SUBAGENT_TOOL,
   toolNames,
-  anthropicTools,
   openaiTools,
   toolsFor,
-  openaiToAnthropicTools,
-  anthropicToOpenaiTools,
   // execution
   executeTool,
   isTool,

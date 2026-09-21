@@ -44,6 +44,12 @@ const FILES = [
   // list; `src/shared.js` resolves them from here in an installed package.
   'client/credentials.js',
   'client/session-store.js',
+  // The shared `~/.aegiscode/.env` loader. bin/aegiscode.js resolves it through
+  // resolveClientModule in src/shared.js and calls it before any credential is
+  // read, so a key lives in ONE file for every host. (No apostrophes in the
+  // comments in this array: test/packaging.test.mjs parses it by pairing single
+  // quotes, and one stray one silently swallows the next real entry.)
+  'client/env-file.js',
   'mcp/tools.js',
   'desktop/renderer/usage.js',
   // The agent-loop engine (persistent shell, editFile/grep/exec, Task
@@ -61,16 +67,6 @@ const FILES = [
   'desktop/lib/local/shell.js',
   'desktop/lib/local/agents.js',
   'desktop/lib/local/prompt.js',
-  // The direct-dial policy: which base URLs may reach the desktop's own
-  // direct-provider transport at all (local endpoints only — a remote one has
-  // nothing to bill against). This host never selects that transport (it only
-  // ever runs the pooled/byok classes — see src/engine.js HOST_CLASSES), but
-  // engine.js and the settings store both require it unconditionally at load
-  // time, so leaving it out of the staged tree is a MODULE_NOT_FOUND at CLI
-  // start-up — which is also why it must be listed before the settings store,
-  // whose `set()` refuses a remote URL for a direct-dial row
-  // (settings.js -> ./local/endpoints.js).
-  'desktop/lib/local/endpoints.js',
   // The provider-config store: one row per provider (base URL + key), and the
   // row the 'byok' class reads for a per-provider key. The CLI now selects that
   // class (src/engine.js), so it needs the same store the desktop writes —

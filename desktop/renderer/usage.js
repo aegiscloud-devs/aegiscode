@@ -131,10 +131,10 @@ function estimatedBuckets(prompt, reply, reasoning) {
 // Per-million-token USD rates. Cache-read/write matter for long sessions.
 //
 // These are the PROVIDER's rates, for the fallback path where a turn has no
-// server-settled charge (a direct provider, ollama, a custom endpoint). A
-// pooled turn reports the ledger figure instead — see turnAccounting's
-// `costUsd` — because the pool's bill carries a margin and a prompt-cache
-// discount this table cannot see.
+// server-settled charge (a byok relay turn reports the provider rate it
+// relays against). A pooled turn reports the ledger figure instead — see
+// turnAccounting's `costUsd` — because the pool's bill carries a margin and a
+// prompt-cache discount this table cannot see.
 //
 // Keys are matched by exact id first, then by prefix (ratesFor below), so a
 // family row covers every dated variant of it.

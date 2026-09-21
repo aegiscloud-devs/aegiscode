@@ -25,9 +25,8 @@ Either way, on first launch:
 3. Pick a model class from the picker at the bottom of the composer.
 
 The published package is [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-on npm; this repo is its source. No AEGIS account is needed for the **Ollama**
-class or a **local** custom endpoint — every other class bills your AEGIS
-account, either the pooled margin or the BYOK handling fee.
+on npm; this repo is its source. Both classes bill your AEGIS account — either
+the pooled margin, or the BYOK handling fee on top of your own provider key.
 
 ## Using it
 
@@ -50,21 +49,18 @@ with **Settings → "Confirm before running tools"** — on by default.
 
 ## Model classes
 
-Pick any of five transports from the model-class picker, switchable
+Pick either of two routes from the model-class picker, switchable
 mid-conversation with context intact:
 
 | Class | Transport | Key held in | Billed? |
 |---|---|---|---|
 | **Aegis Cloud** | `aegiscloud.org` — one entry, **Nexus**; the pool auto-routes across whichever providers are live | main process | yes — pooled margin |
-| **Ollama** | local `ollama` daemon | no key needed | **no** — nothing leaves the machine |
-| **Custom OpenAI-compatible** (LM Studio, vLLM, llama.cpp, an Ollama shim) | direct from the desktop app, **local base URLs only** | main process — never sent to the renderer | **no** — free lane, local only |
-| **Anthropic-compatible** (a local Messages-format gateway — LiteLLM, claude-code-router) | direct from the desktop app, **local base URLs only** | main process | **no** — free lane, local only |
 | **Bring your own key** | your provider key, relayed by AEGIS — see below | main process | yes — flat AEGIS handling fee |
 
-Get a free AEGIS key at **https://aegiscloud.org**. The two custom classes are
-free because aegiscode talks straight to an endpoint on your own machine; point
-one at a hosted provider instead and there is nothing for AEGIS to meter, so
-those models live on the **Bring your own key** class, which does bill.
+Get a free AEGIS key at **https://aegiscloud.org**. The local-endpoint classes
+that used to live here — Ollama, and the OpenAI-/Anthropic-compatible direct
+lanes — have been removed; the hosted providers they could reach are on the
+**Bring your own key** class, which bills the handling fee.
 
 ### Bring your own key (BYOK)
 
@@ -72,10 +68,13 @@ For the providers AEGIS does **not** run in its pool — bring your own key and
 the models that key unlocks appear as their own entries, one per provider.
 
 1. **Settings** → find the row named `BYOK: <Provider>` (OpenAI, Anthropic,
-   DeepSeek, Groq, xAI, Mistral, Gemini, OpenRouter, …).
-2. Paste your provider key and **Save**. There is no base-URL field on these
-   rows: a BYOK turn always talks to AEGIS's own relay
-   (`/api/v1/byok/chat/completions`), which is what attaches your AEGIS key.
+   DeepSeek, Groq, xAI, Mistral, Gemini, OpenRouter, …), paste your provider key
+   and **Save**. There is no base-URL field on these rows: a BYOK turn always
+   talks to AEGIS's own relay (`/api/v1/byok/chat/completions`), which is what
+   attaches your AEGIS key.
+2. Or skip the UI and put the key in `~/.aegiscode/.env` (`OPENAI_API_KEY=…`,
+   `ANTHROPIC_API_KEY=…`); the app reads that file into the environment at
+   startup, and a provider with no key saved in Settings is resolved from it.
 3. Select the **Bring your own key** class and pick a model.
 
 **What it costs.** AEGIS pays your provider nothing on this lane, so there is no
@@ -92,7 +91,7 @@ handling fee has to be billed somewhere. With no AEGIS key connected the class
 shows every model but says exactly that, rather than failing opaquely.
 
 Note that a **BYOK turn is single-shot** — the relay takes no `tools` parameter,
-so the agentic tool loop below is off for these models. Use a pooled or direct
+so the agentic tool loop below is off for these models. Use the **Aegis Cloud**
 class when you want file and shell access.
 
 ## Tools available to the model
@@ -283,7 +282,7 @@ node ../test/desktop-shell.mjs   # headless IPC smoke test (no Electron binary n
 main.js              Electron main process — window + IPC shell only
 preload.js           Context-isolated IPC bridge exposed to the renderer
 renderer/            UI (vanilla JS, no framework)
-lib/local/           Model classes, providers, agentic tool loop, prompt
+lib/local/           Model classes, agentic tool loop, prompt
 lib/local/queue.js   The shared work queue (~/.aegiscode/queue.jsonl)
 lib/local/autonomous.js  The unattended worker — directive, digest, commits
 lib/local/session-rounds.js  Session-scoped tool-round ledger (in-memory)

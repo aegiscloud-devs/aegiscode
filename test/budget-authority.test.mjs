@@ -90,12 +90,6 @@ async function runTurn(payload) {
   const engine = createLocalEngine({
     aegis,
     settings,
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; }, async chat() { throw new Error('unused'); } },
-    // A custom class would use this; the pooled class must not.
-    providers: {
-      async openaiCompatible() { throw new Error('the pooled class must not reach providers.openaiCompatible'); },
-      async anthropicMessages() { throw new Error('the pooled class must not reach providers.anthropicMessages'); },
-    },
     tools,
   });
   await engine.chat(payload, () => {});

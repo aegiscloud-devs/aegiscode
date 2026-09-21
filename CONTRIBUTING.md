@@ -14,8 +14,8 @@ only the surface that connects your tools to the AEGIS service:
 - `mcp/server.js` — a zero-dependency MCP server (JSON-RPC over stdio)
 - `commands/*` — Claude Code slash commands
 - `skills/*` — Claude Code skills
-- `desktop/` — AEGIS Desktop, a thin Electron host with direct local /
-  OpenAI-compatible / Anthropic-compatible transport
+- `desktop/` — AEGIS Desktop, a thin Electron host that runs the same two model
+  classes (`aegis` pooled cloud, `byok` relayed provider key)
 - `install.sh` — the one-line installer
 
 ## Ground rules

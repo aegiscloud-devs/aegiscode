@@ -11,7 +11,7 @@
  *      never a number this app puts on a request. (Kept for that one line;
  *      it decided a request's ceiling until the "Max tokens" dropdown below
  *      was removed.)
- *   2. `budgetFor(cls, model, stated, effort)` — the token budget a request
+ *   2. `budgetFor(model, stated, effort)` — the token budget a request
  *      actually travels with, or `undefined` for "state none".
  *
  * There used to be a third thing: a "Max tokens" dropdown (1k/4k/16k/64k/300k
@@ -84,15 +84,16 @@ const DEEPSEEK_REASONING_MODEL_RE = /^deepseek-(v4(\.\d+)?-(flash|pro)|flash|pro
 const EFFORT_TOKEN_BUDGET = { low: 8192, medium: 16384, high: 32768 };
 
 /**
- * Classes whose wire format REQUIRES a stated `max_tokens`.
+ * There is no longer a "class that requires a stated max_tokens".
  *
- * Anthropic's Messages API rejects a request without one, so for that class a
- * number has to travel whether or not anyone can predict the answer's length.
- * It is derived from the effort rung (never a dropdown), so the field is
- * present-and-honest rather than a 4096 guess that a reasoning model spends
- * before writing anything.
+ * That set held exactly one entry — `anthropic`, the direct-dial class that
+ * spoke the Messages API itself, which rejects a request with no `max_tokens`.
+ * That class is gone: the survivors are `aegis`, whose pooled path lets the
+ * server size the budget (aegis1's pass_budgets ladder), and `byok`, which
+ * reaches its upstream provider through the AEGIS relay — the relay owns the
+ * upstream wire format, so the requirement is no longer this client's to
+ * satisfy. A stated number is therefore only ever the caller's own.
  */
-const REQUIRES_STATED_BUDGET = new Set(['anthropic']);
 
 /** An unknown or "auto" rung falls to the top: the same default the engine
  *  and aegiscodex-dev apply, so "auto" cannot silently mean "smallest". */
@@ -108,18 +109,23 @@ function effortRung(effort) {
  *   1. a number the caller STATED (`stated`) is returned verbatim — a
  *      deliberate cap is a liability ceiling and is never raised or lowered by
  *      a rung;
- *   2. otherwise a model that reasons against its own output budget, or a
- *      class that requires the field, gets the effort rung;
+ *   2. otherwise a model that reasons against its own output budget gets the
+ *      effort rung;
  *   3. otherwise `undefined`: no `max_tokens` is sent at all and the
- *      provider's own output limit governs. This is the default case for
- *      custom endpoints, and stating a number here was the whole defect —
- *      `max_tokens: 4096` invented by the transport meant a DeepSeek model
- *      answered nothing, with no error to explain it.
+ *      provider's own output limit governs. Stating a number here was the
+ *      whole defect — `max_tokens: 4096` invented by the transport meant a
+ *      DeepSeek model answered nothing, with no error to explain it.
+ *
+ * No `cls` parameter: it has no bearing on the answer any more. When a class
+ * could change the outcome (the removed `anthropic` direct-dial lane) the
+ * engine's `reasoningBudget()` took it too, and the two must stay one
+ * authority — a parameter that no longer selects anything is how the next
+ * class-dependent rule gets added to one copy and not the other.
  */
-function budgetFor(cls, model, stated, effort) {
+function budgetFor(model, stated, effort) {
   const n = Number(stated);
   if (Number.isFinite(n) && n > 0) return n;
-  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || '')) || REQUIRES_STATED_BUDGET.has(cls)) {
+  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || ''))) {
     return EFFORT_TOKEN_BUDGET[effortRung(effort)];
   }
   return undefined;
@@ -132,7 +138,6 @@ if (typeof module !== 'undefined' && module.exports) {
     maxTokensCeiling,
     FLAT_CEILING,
     EFFORT_TOKEN_BUDGET,
-    REQUIRES_STATED_BUDGET,
     DEEPSEEK_REASONING_MODEL_RE,
   };
 }
