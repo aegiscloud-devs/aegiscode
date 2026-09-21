@@ -6,14 +6,11 @@
  * This is `deps.js`'s path resolution split into its own module, and the split
  * is load-bearing rather than cosmetic. `deps.js` eagerly requires everything
  * it resolves — the engine, the tool registry, the client — so a module that
- * only needs to *locate* one shared file cannot require deps.js: the CLI's
- * engine requires `src/custommodels.js`, so `custommodels.js -> deps.js ->
- * engine.js` would be a require cycle, and the cycle would hand one of them a
- * half-built exports object (`createLocalEngine === undefined`) at load time.
+ * only needs to *locate* one shared file cannot require deps.js: doing so
+ * from inside something deps.js itself requires would be a require cycle,
+ * handing one side a half-built exports object at load time.
  *
- * So: paths here, code in deps.js. `custommodels.js` resolves the shared
- * endpoint policy (desktop/lib/local/endpoints.js) through this module and
- * requires just that file, which needs nothing but node builtins.
+ * So: paths here, code in deps.js.
  *
  * Two layouts must work, exactly as deps.js documents:
  *

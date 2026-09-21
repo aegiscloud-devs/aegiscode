@@ -74,10 +74,6 @@ const {
 const {
   aggregateSessionUsage, pruneSessionHistory, readResumeList,
 } = require('./history.js');
-// The custom-endpoint catalog behind the `custom` class and /model add|key|remove.
-const customModelsCatalog = require('./custommodels.js');
-const { VALID_WIRES } = customModelsCatalog;
-
 // Guarded: a concurrent workstream owns ./markdown.js.
 let markdownModule = null;
 try {
@@ -115,45 +111,6 @@ const EFFORT_LEVELS = overlays.EFFORT_VALUES;
 
 // ── Small handler helpers ─────────────────────────────────────────────────────
 
-/**
- * Split a command's raw tail into tokens, honouring double quotes so a model
- * name or id with a space stays one token
- * (`/model add local "Llama 3 70B" http://…`). Backslash escapes a quote or a
- * backslash inside a quoted run. Never throws — an unclosed quote simply ends
- * at the end of the line.
- */
-function splitArgs(raw) {
-  const text = String(raw == null ? '' : raw);
-  const out = [];
-  let cur = '';
-  let quoted = false;
-  let started = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '\\' && quoted && i + 1 < text.length && (text[i + 1] === '"' || text[i + 1] === '\\')) {
-      cur += text[++i];
-      started = true;
-      continue;
-    }
-    if (ch === '"') {
-      quoted = !quoted;
-      // A quoted empty string ("") is a real, intentional token.
-      started = true;
-      continue;
-    }
-    if (!quoted && /\s/.test(ch)) {
-      if (started) out.push(cur);
-      cur = '';
-      started = false;
-      continue;
-    }
-    cur += ch;
-    started = true;
-  }
-  if (started) out.push(cur);
-  return out;
-}
-
 const note = (c, text) => c.push({ role: 'note', text });const panel = (c, lines) => c.push({ role: 'panel', lines });
 const tip = (c, text) => c.push({ role: 'tip', text });
 const done = (c, text) => c.push({ role: 'done', text });
@@ -163,17 +120,13 @@ const shortCwd = () => process.cwd().split('/').filter(Boolean).pop() || '~';
  * The pinnable-model list for the class the session is on, fetched fresh.
  *
  * `c.loadModels()` on the command context is `() => listModelsFor(cls)` — it
- * already returns the class-scoped rows (pooled catalog on aegis, the
- * `provider:model` ids this machine can relay on byok, the /model add catalog
- * on custom). This helper must RETURN that value.
+ * already returns the class-scoped rows (the pooled catalog on aegis, the
+ * `provider:model` ids this machine can relay on byok). This helper must
+ * RETURN that value.
  *
  * It used to `await` it and discard the result, leaving every caller to read
- * `c.state().models` instead — and that field was a two-way ternary over a
- * three-class world, so on `custom` it fell through to the pooled catalog,
- * which is never populated on that class. The picker therefore reported "Could
- * not read the model catalog" on a class whose models are local and always
- * readable, while `/models` (which reads listModelsFor directly) listed them
- * correctly. Best-effort on failure: offline, the caller falls through to the
+ * `c.state().models` instead, which went stale the moment the live class
+ * changed. Best-effort on failure: offline, the caller falls through to the
  * honest empty note rather than opening an empty picker.
  * @returns {Promise<Array<{id:string,label:string,note:string}>>}
  */
@@ -864,18 +817,12 @@ const COMMANDS = [
       // will actually take (app.js's buildState().models is class-scoped too).
       const cls = (c.ctx && c.ctx.modelClass) || 'aegis';
       const byok = cls === 'byok';
-      const custom = cls === 'custom';
-      // The sub-command token, lower-cased: `add` / `key` / `remove` are the
-      // custom-endpoint catalog's verbs. A model id is never one of these in
-      // practice, and `list` already shadows a real id the same way.
-      const sub = id.toLowerCase();
       if (!id) {
         note(c, `model: ${c.ctx.model || 'server default'}`);
         // Populate the picker for the LIVE class first. The list is the return
         // value, not `c.state().models`: that field is rebuilt from a cache the
-        // current class may not populate (and the custom class never asks the
-        // pool at all), so reading it rendered an empty picker on a class whose
-        // models are local and always readable.
+        // current class may not populate, so reading it rendered an empty
+        // picker on a class whose models are local and always readable.
         //
         // `pickerEntries` is the same filter app.js's buildState() applies to
         // that field, and it has to be applied here for the same reason it is
@@ -887,21 +834,16 @@ const COMMANDS = [
           // Say why, and what unblocks it: an unreachable catalog is almost
           // always a missing key or no network, and "no models advertised"
           // read as "the platform has none" rather than "this client could not
-          // ask". On byok "no models" has a third cause — the relay is fine and
-          // the account is fine, this machine simply holds no provider key yet,
-          // which is exactly what /byok-key fixes. On custom an empty list is
-          // never a network problem: the catalog is local, so the only cause is
-          // that it has not been filled in yet.
-          note(c, custom
-            ? 'No custom endpoints yet — /model add <id> <name> <model> <baseURL> registers a LOCAL endpoint (its key is prompted, or pass it last).'
-            : byok
-              ? 'No relayable models — this machine holds no provider key yet. Save one with /byok-key <provider>, then retry /model.'
-              : c.state().online
-                ? 'Could not read the model catalog (offline, or the server refused it) — /models retries.'
-                : // The key travels in the environment only (client/aegis.js reads
-                  // AEGIS_API_KEY); /login is an unavailable command here, so
-                  // pointing at it would send the user to a refusal.
-                  'No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free at https://aegiscloud.org), then retry /model.');
+          // ask". On byok "no models" means this machine simply holds no
+          // provider key yet, which is exactly what /byok-key fixes.
+          note(c, byok
+            ? 'No relayable models — this machine holds no provider key yet. Save one with /byok-key <provider>, then retry /model.'
+            : c.state().online
+              ? 'Could not read the model catalog (offline, or the server refused it) — /models retries.'
+              : // The key travels in the environment only (client/aegis.js reads
+                // AEGIS_API_KEY); /login is an unavailable command here, so
+                // pointing at it would send the user to a refusal.
+                'No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free at https://aegiscloud.org), then retry /model.');
           c.render();
           return true;
         }
@@ -909,24 +851,15 @@ const COMMANDS = [
         // from its own default with no error. Say so where the pin is visible
         // rather than letting the reply look like the pinned model. On byok the
         // failure mode is different and louder (the relay 400s on a provider it
-        // has no key for), so the sentence names the right one; on custom the
-        // entry was simply removed or renamed after it was pinned.
+        // has no key for).
         if (c.ctx.model && !models.some((m) => m.id === c.ctx.model)) {
-          note(c, custom
-            ? `pinned model "${c.ctx.model}" is not in your custom catalog — pick one below, or re-add it with /model add.`
-            : byok
-              ? `pinned model "${c.ctx.model}" is not one this machine can relay — pick from the list below.`
-              : `pinned model "${c.ctx.model}" is not in the catalog — the pool will answer with its own default; pick one below.`);
+          note(c, byok
+            ? `pinned model "${c.ctx.model}" is not one this machine can relay — pick from the list below.`
+            : `pinned model "${c.ctx.model}" is not in the catalog — the pool will answer with its own default; pick one below.`);
         }
-        // The overlay's subtitle promises /model add|remove, and that promise is
-        // now kept: the custom class owns this catalog, so the verbs are real
-        // there. Say which surface applies to the live class instead of the
-        // blanket "this build refuses both" that used to sit here.
-        note(c, custom
-          ? '/model <id> pins one for this session; /model add|key|remove manage the catalog; /models lists it.'
-          : byok
-            ? '/model <id> pins one for this session; /models lists what this machine can relay.'
-            : '/model <id> pins one for this session; /models lists what the server advertises.');
+        note(c, byok
+          ? '/model <id> pins one for this session; /models lists what this machine can relay.'
+          : '/model <id> pins one for this session; /models lists what the server advertises.');
         // `cls` rides on the overlay so the picker's title and subtitle render
         // for the class that opened it, even if /class moves while it is open.
         c.openOverlay({ type: 'model', items: models, sel: 0, current: c.ctx.model, cls });
@@ -938,104 +871,6 @@ const COMMANDS = [
         const models = pickerEntries(await loadModels(c));
         if (!models.length) note(c, 'No pinnable models advertised — /models lists the server\'s ids.');
         else panel(c, panels.buildModelList(c.ctx.model, models, c.ctx));
-        c.render();
-        return true;
-      }
-      // The /model add catalog — the aegiscodex-dev concept ported in, LOCAL
-      // endpoints only. A user registers an endpoint on their own machine (own
-      // base URL, own model string, own key) and the CLI calls it DIRECTLY
-      // through the desktop transport, the full tool loop and all: no pooled
-      // route, no BYOK relay, no fee or margin — because the request never
-      // touches aegiscloud.org and there is no vendor to pay.
-      //
-      // That is only defensible for an address on this machine. A REMOTE base
-      // URL is refused (custommodels.js isLocalEndpoint, fail-closed): nothing
-      // on this lane is metered, so remote usage on it would be unpaid, and the
-      // relay cannot bill an arbitrary URL either (it accepts a fixed catalog
-      // of provider ids). The refusal points at /class byok — whose providers
-      // ARE billed, a handling fee per 1k tokens — or at a local address.
-      // There is deliberately no flag that re-opens the remote direct lane.
-      // The classic entry form is the positional one
-      //   /model add <id> <name> <model> <baseURL> [wire]
-      // with the key prompted for (masked) right after, or supplied inline
-      //   /model add <id> <name> <model> <baseURL> [wire] <key>
-      // (the scriptable spelling, like /byok-key's second token).
-      if (sub === 'add') {
-        const parts = splitArgs(args._rest);
-        // `sub` itself is the first token of _rest, so drop its own copy.
-        const rest = parts[0] === 'add' ? parts.slice(1) : parts;
-        // The wire name is optional and only recognised when it is one of the
-        // two transports — otherwise that token is the key (so
-        // `/model add id name model url sk-…` needs no placeholder).
-        let at = 4;
-        let wire;
-        if (VALID_WIRES.includes(String(rest[at] || '').toLowerCase())) {
-          wire = String(rest[at]).toLowerCase();
-          at += 1;
-        }
-        const fields = { id: rest[0], name: rest[1], model: rest[2], baseURL: rest[3], wire };
-        if (!fields.id || !fields.model || !fields.baseURL) {
-          note(c, 'Usage: /model add <id> <name> <model> <baseURL> [openai|anthropic] [key]');
-          note(c, '  e.g. /model add local Llama-3 "meta-llama/Llama-3-70b" http://localhost:8080/v1');
-          note(c, '  the base URL must be LOCAL (localhost, 127.0.0.1, a LAN address, *.local, or a dotless host like "ollama").');
-          note(c, '  remote providers are billed, so they are not offered here — /class byok with /byok-key <provider> relays them and charges the AEGIS handling fee.');
-          note(c, '  the key is prompted for and stored 0600 on this machine — never in config.json.');
-          c.render();
-          return true;
-        }
-        const inlineKey = rest[at] || '';
-        const store = c.settings && c.settings();
-        const res = customModelsCatalog.addCustom({ ...fields, key: null }, store);
-        if (res.error) {
-          c.push({ role: 'error', text: `couldn't add "${fields.id}": ${res.error}` });
-          return true;
-        }
-        const entry = res.entry;
-        let key = inlineKey || '';
-        if (!key) {
-          note(c, `storing a key for "${entry.id}" — leave it blank to add it later with /model key ${entry.id}.`);
-          c.render();
-          key = String((await c.readSecret(`${entry.id} key: `)) || '').trim();
-        }
-        if (key) {
-          customModelsCatalog.setCustomKey(entry.id, key, store);
-        }
-        note(c, `added "${entry.id}" → ${entry.model} at ${entry.baseURL} (${entry.wire} wire)${key ? '' : ' — no key yet'} — local endpoint, direct and free.`);
-        note(c, key
-          ? `run it with /class custom (then /model ${entry.id}), or /model ${entry.id} while on the custom class.`
-          : `add its key with /model key ${entry.id}, then /class custom runs it.`);
-        c.render();
-        return true;
-      }
-      if (sub === 'key') {
-        const target = splitArgs(args._rest)[1];
-        if (!target) { note(c, 'Usage: /model key <id> — /models lists your custom endpoints.'); c.render(); return true; }
-        const entry = customModelsCatalog.getCustom(target);
-        if (!entry) { note(c, `no custom endpoint "${target}" — /model add registers one.`); c.render(); return true; }
-        const store = c.settings && c.settings();
-        note(c, `storing a key for "${entry.id}" — blank clears it.`);
-        c.render();
-        const key = String((await c.readSecret(`${entry.id} key: `)) || '').trim();
-        if (!key) { note(c, 'nothing saved.'); c.render(); return true; }
-        customModelsCatalog.setCustomKey(entry.id, key, store);
-        note(c, `saved a key for "${entry.id}" on this machine — /class custom runs it.`);
-        c.render();
-        return true;
-      }
-      if (sub === 'remove' || sub === 'rm') {
-        const target = splitArgs(args._rest)[1];
-        if (!target) { note(c, 'Usage: /model remove <id>'); c.render(); return true; }
-        const store = c.settings && c.settings();
-        const { removed } = customModelsCatalog.removeCustom(target, store);
-        if (!removed) { note(c, `no custom endpoint "${target}" — /models lists your endpoints.`); c.render(); return true; }
-        // A pin on the row we just deleted would otherwise outlive its entry and
-        // fail at the next send with "no model … in the catalog".
-        if (String(c.ctx.model || '') === String(target)) {
-          c.ctx.model = null;
-          c.saveConfig({ model: null, currentModelId: null });
-          note(c, `unpinned "${target}" (its catalog entry is gone).`);
-        }
-        note(c, `removed "${target}" and forgot its key.`);
         c.render();
         return true;
       }
