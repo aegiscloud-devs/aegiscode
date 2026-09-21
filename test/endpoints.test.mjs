@@ -3,9 +3,9 @@
 // lane that bills (the pooled `aegis` class, or `byok` through the relay).
 //
 // This file covers the classifier and the two seams that enforce it in the
-// desktop host. The CLI's half lives in test/cli-custom-models.test.mjs; both
-// read the SAME desktop/lib/local/endpoints.js, so these cases are the shared
-// contract rather than one host's private rule.
+// desktop host (the CLI dropped its own custom-endpoint class and now only
+// ever runs 'aegis'/'byok' — see cli/src/engine.js HOST_CLASSES — but the
+// desktop app's direct-dial classes still gate on this same policy).
 
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

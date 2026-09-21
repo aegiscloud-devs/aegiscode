@@ -1154,7 +1154,8 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       }
       if (cls === 'byok' && !apiKey) {
         const err = new Error(
-          `byok: no key saved for "${byokParts.provider}" — add one before chatting with this model.`
+          `No key for "${byokParts.provider}" yet. Easiest fix: /class aegis (uses your AEGIS key, ` +
+            `no setup) — or add this provider's own key: /byok-key ${byokParts.provider} <key>.`
         );
         err.status = 400;
         throw err;
@@ -1174,8 +1175,8 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       // key to get), so this refuses only the send, and only until a key lands.
       if (cls === 'byok' && !aegis.apiKey) {
         const err = new Error(
-          'byok: connect your AEGIS account key first — the BYOK handling fee is billed there. ' +
-            'Add it in the Status card (or run /login), then try again.'
+          'No AEGIS key connected yet. Easiest fix: /class aegis (skips BYOK entirely) — ' +
+            'or add your AEGIS key with /login, then try again.'
         );
         err.status = 401;
         throw err;

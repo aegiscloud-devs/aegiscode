@@ -40,7 +40,6 @@ const {
 const credentials = require('./credentials.js');
 const cloudsync = require('./cloudsync.js');
 const { readSecret } = require('./secret.js');
-const customModelsCatalog = require('./custommodels.js');
 const { normalizeModelCatalog, pickerEntries, catalogIds } = require('./models.js');
 const { appendHistory, readSessionTranscript, readOwnSessions } = require('./history.js');
 const { snapshotCheckpoint } = require('./checkpoint.js');
@@ -494,20 +493,10 @@ function createApp(options = {}) {
    * offer": a catalog is a convenience, and an offline client must still be
    * able to chat on the server's own default.
    */
-  async function loadCustomModels() {
-    // The `custom` catalog is local (config.json + the 0600 key store), so this
-    // never touches the network and needs no cache. The engine already returns
-    // the picker/`/models` shape ({id, label, note, configured, wire}).
-    if (typeof engine.listModels !== 'function') return [];
-    const res = await engine.listModels('custom');
-    return (res && res.models) || [];
-  }
-
   async function listModelsFor(cls) {
     const want = HOST_CLASSES.includes(cls) ? cls : commandCtx.modelClass;
     try {
       if (want === 'byok') return await loadByokModels();
-      if (want === 'custom') return await loadCustomModels();
       return await loadModels();
     } catch {
       return [];
@@ -516,30 +505,27 @@ function createApp(options = {}) {
 
   /**
    * Whether a pinned id can run on `cls`, decided synchronously (switchClass is
-   * not async). byok ids are `provider:model`; custom ids are the catalog's
-   * own (config.json, read sync); aegis takes anything that is neither — the
-   * pooled catalog is validated separately, at launch, by validatePinnedModel.
+   * not async). byok ids are `provider:model`; aegis takes anything that is
+   * not — the pooled catalog is validated separately, at launch, by
+   * validatePinnedModel.
    */
   function pinBelongsToClass(cls, id) {
     const s = String(id == null ? '' : id);
     if (cls === 'byok') return s.includes(':');
-    if (cls === 'custom') return Boolean(customModelsCatalog.getCustom(s));
-    // aegis: not a byok id and not a custom-catalog id.
-    return !s.includes(':') && !customModelsCatalog.getCustom(s);
+    // aegis: not a byok id.
+    return !s.includes(':');
   }
 
   /**
    * Switch the live class. Refuses anything this host cannot run (engine.js's
-   * HOST_CLASSES is the authority — the local/custom classes stay stubs).
+   * HOST_CLASSES is the authority).
    *
    * A pin is cleared when it does not belong to the class being entered: a
    * pooled id pinned under byok would be parsed as provider `<pooled id>` and
    * fail at the relay with a confusing "no key saved for …" instead of here,
    * with a reason. Symmetrically, `anthropic:claude-…` under aegis is an id the
    * pooled catalog does not advertise, which is the silent-fallback case
-   * validatePinnedModel exists to prevent. The `custom` class owns its own id
-   * space (the /model add catalog, resolvable synchronously from config.json),
-   * so a pin belongs to it exactly when it is one of those ids.
+   * validatePinnedModel exists to prevent.
    */
   function switchClass(next) {
     const want = String(next == null ? '' : next).trim().toLowerCase();
@@ -606,31 +592,6 @@ function createApp(options = {}) {
           'warn',
           `pinned model "${pinned}" belongs to the pooled class — on BYOK an id is ` +
             '"<provider>:<model>"; pin cleared, /models lists what this machine can relay.'
-        )
-      );
-      return pinned;
-    }
-    // A custom pin is validated against the local catalog, never the pooled one:
-    // its ids are the user's own (from /model add) and the pool has never heard
-    // of them, so checking the pooled catalog would clear every custom pin on
-    // launch. An empty catalog clears nothing (offline-safe like the pooled path).
-    if (commandCtx.modelClass === 'custom') {
-      let customModels;
-      try {
-        customModels = await loadCustomModels();
-      } catch {
-        return null;
-      }
-      if (!customModels.length) return null;
-      if (customModels.some((m) => m.id === pinned)) return null;
-      commandCtx.model = null;
-      updateConfig({ model: null, currentModelId: null });
-      emit(
-        render.renderNotice(
-          ctx(),
-          'warn',
-          `pinned model "${pinned}" is not in your custom catalog — pin cleared; ` +
-            '/models lists your endpoints, /model add registers one.'
         )
       );
       return pinned;
@@ -1082,23 +1043,7 @@ function createApp(options = {}) {
       // dropped, live ids only (see models.js pickerEntries).
       // Whichever class is live decides what is pinnable — the pooled ids the
       // server advertises, or the `provider:model` ids this machine can relay.
-      // The rows the picker/overlay offers. Class-scoped, because each class
-      // owns a different id space: pool-advertised ids on aegis, this machine's
-      // `provider:model` ids on byok, and the /model add catalog on custom.
-      // The custom half is read synchronously from config.json (+ the 0600 key
-      // store for the `configured` flag) because buildState() cannot await, and
-      // it is the reason the picker used to fail on that class: the ternary
-      // here was two-way, so `custom` fell through to the pooled modelCache,
-      // which is never populated on a class that never asks the pool.
-      // `listCustomModels` is the same builder /models and the engine use, so
-      // the rows cannot drift from what the class will actually accept.
-      models: pickerEntries(
-        commandCtx.modelClass === 'byok'
-          ? byokCache.models
-          : commandCtx.modelClass === 'custom'
-            ? customModelsCatalog.listCustomModels(engine.settings)
-            : modelCache.models
-      ),
+      models: pickerEntries(commandCtx.modelClass === 'byok' ? byokCache.models : modelCache.models),
       commands: visibleCommands(),
       transcript: transcript.slice(),
       sessions: [],

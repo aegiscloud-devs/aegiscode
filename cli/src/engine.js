@@ -18,14 +18,6 @@
  *          free ride — and why the key must never be handed to a direct provider
  *          call from here.
  *
- *   custom LOCAL endpoints only. The `custom` class (the /model add catalog)
- *          reaches the direct provider transport — the free lane — and the
- *          catalog refuses every base URL that is not on this machine, so the
- *          only usage that never touches aegiscloud.org is usage with no vendor
- *          behind it (see custommodels.js isLocalEndpoint). A remote entry is
- *          refused in-process before any network call and pointed at /class
- *          byok, which bills the AEGIS handling fee.
- *
  * Ollama stays a stub that throws if the engine ever calls it: it needs an
  * endpoint surface this host does not offer, and a stub is proof that a code
  * path meant for another host never silently runs here.
@@ -43,25 +35,16 @@
  */
 
 const os = require('node:os');
-const { createLocalEngine, createSettingsStore, providers } = require('./deps.js');
+const { createLocalEngine, createSettingsStore } = require('./deps.js');
 const { credentials } = require('./shared.js');
-const custom = require('./custommodels.js');
 const VERSION = require('../package.json').version;
 
 /**
  * The classes this host can actually run (see the docstring above).
  *  aegis  — the pooled route (account key pays, pool picks the provider; bills).
  *  byok   — the BYOK relay (your provider key, AEGIS bills a handling fee).
- *  custom — the /model add catalog, LOCAL endpoints only: your own base URL +
- *           key on this machine (llama.cpp, Ollama, a LAN box), called DIRECTLY
- *           through the desktop transport with the full tool loop, never
- *           touching aegiscloud.org. Free of AEGIS fee and margin for exactly
- *           that reason, which is why a remote base URL is refused here: no
- *           other class may reach the direct transport, and nothing on this
- *           lane is metered, so remote usage on it would be unpaid. Remote
- *           providers go through /class byok instead, where the relay bills.
  */
-const HOST_CLASSES = Object.freeze(['aegis', 'byok', 'custom']);
+const HOST_CLASSES = Object.freeze(['aegis', 'byok']);
 
 /** The class a turn runs on when nothing else is said. */
 const DEFAULT_CLASS = 'aegis';
@@ -70,7 +53,6 @@ const DEFAULT_CLASS = 'aegis';
 const CLASS_LABELS = Object.freeze({
   aegis: 'AEGIS Cloud (pooled)',
   byok: 'Bring your own key (relayed, billed)',
-  custom: 'Custom endpoint (local only — free, direct)',
 });
 
 function unsupported(label) {
@@ -105,16 +87,13 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
       listTags: async () => [],
       chat: unsupported('Ollama'),
     },
-    // The real direct-provider transport — no longer a throwing stub. The
-    // `custom` class (the /model add catalog, LOCAL endpoints only) rewrites a
-    // turn to the 'openai-compat' / 'anthropic' class the desktop engine
-    // already drives through exactly these two functions, so a local endpoint
-    // gets the same tool loop the pooled class does. Nothing else in this host
-    // reaches them: prepareCustom's local-only gate is the only door, and it
-    // throws for a remote base URL before the call.
+    // This host only ever asks for 'aegis' or 'byok' (see HOST_CLASSES), never
+    // the desktop engine's own 'anthropic'/'openai-compat' direct-transport
+    // classes — those stay stubs, proof that a code path meant for the
+    // desktop's local-endpoint feature never silently runs here.
     providers: {
-      anthropicMessages: providers.anthropicMessages,
-      openaiCompatible: providers.openaiCompatible,
+      anthropicMessages: unsupported('a direct Anthropic endpoint'),
+      openaiCompatible: unsupported('a direct OpenAI-compatible endpoint'),
     },
     env: {
       platform: process.platform,
@@ -132,57 +111,8 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
     return HOST_CLASSES.includes(asked) ? asked : DEFAULT_CLASS;
   }
 
-  /**
-   * Rewrite a `custom`-class turn to the concrete transport class the desktop
-   * engine already drives. The catalog entry is the source of truth for the
-   * endpoint; its base URL + key are written just-in-time into the wire-class
-   * settings row (settings.get(cls).baseURL / rawKey(cls) is what the engine's
-   * dispatch reads), and the payload's class + model are set to that wire class
-   * and the entry's real model string. Throws a clear, in-process error rather
-   * than shipping `model: undefined` or an empty base URL upstream.
-   *
-   * The local-only gate is the first thing after the catalog lookup, and it
-   * runs BEFORE any network call, before the key check and before the
-   * just-in-time settings write: a remote entry throws here, so the direct
-   * provider transport below is never reached with one and there is no
-   * fall-through path to it. Remote providers are billed, and nothing on this
-   * lane is metered, so the refusal points at /class byok (billed) and at a
-   * local address (free).
-   */
-  function prepareCustom(payload) {
-    const modelId = payload && payload.model;
-    const resolved = modelId ? custom.resolveCustom(modelId, settings) : null;
-    if (!resolved) {
-      const err = new Error(
-        modelId
-          ? `custom: no model "${modelId}" in the catalog — /model add <id> <name> <model> <baseURL>, or /models to list.`
-          : 'custom: no model pinned — pin one with /model <id> (/models lists your custom endpoints).'
-      );
-      err.status = 400;
-      throw err;
-    }
-    if (!resolved.local) {
-      const err = new Error(custom.customRefusal(resolved.baseURL));
-      err.status = 400;
-      throw err;
-    }
-    if (resolved.wire === 'anthropic' && !resolved.key) {
-      const err = new Error(
-        `custom: "${resolved.id}" is an Anthropic-style endpoint and needs a key — /model key ${resolved.id}.`
-      );
-      err.status = 400;
-      throw err;
-    }
-    // Just-in-time scratch write: the wire-class row is only ever this session's
-    // active custom endpoint, re-set on every custom turn, so two custom models
-    // sharing a wire never collide.
-    settings.set(resolved.wireClass, { baseURL: resolved.baseURL, key: resolved.key || null });
-    return { ...payload, class: resolved.wireClass, model: resolved.model };
-  }
-
   function chat(payload, onDelta) {
     const cls = currentClass();
-    if (cls === 'custom') return local.chat(prepareCustom(payload), onDelta);
     // `class` is stamped here rather than sent by every caller, so the class a
     // turn runs on has exactly one source of truth (the live session state) and
     // a caller cannot accidentally pin a stale one.
@@ -196,23 +126,11 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
     clearSessionApprovals: local.clearSessionApprovals,
     // The engine's own class table, narrowed to the ones this host runs — so a
     // UI built from listClasses() can never offer a class that would throw.
-    // `custom` is not in the desktop engine's own CLASSES (it is a CLI concept
-    // that rewrites to openai-compat/anthropic), so it is appended here.
     // Async, like the local engine's: listClasses() probes Ollama (a live
     // HTTP round-trip) before it can answer, so returning the raw promise made
     // `/class` throw "filter is not a function". The caller awaits it.
-    listClasses: async () => {
-      const base = (await local.listClasses()).filter((c) => HOST_CLASSES.includes(c.class));
-      const configured = custom.listCustomModels(settings).length > 0;
-      return [...base, { class: 'custom', label: CLASS_LABELS.custom, kind: 'custom', configured }];
-    },
-    // The `custom` class enumerates the catalog (the desktop engine has no such
-    // class, so delegating would throw); every other class delegates.
-    listModels: (cls) => {
-      const want = cls || currentClass();
-      if (want === 'custom') return { class: 'custom', models: custom.listCustomModels(settings) };
-      return local.listModels(want);
-    },
+    listClasses: async () => (await local.listClasses()).filter((c) => HOST_CLASSES.includes(c.class)),
+    listModels: (cls) => local.listModels(cls || currentClass()),
     classLabel: (cls) => CLASS_LABELS[cls] || CLASS_LABELS[DEFAULT_CLASS],
     getClass: currentClass,
     settings,

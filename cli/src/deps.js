@@ -21,11 +21,8 @@
 const path = require('node:path');
 
 // Where the shared modules live, WITHOUT loading any of them. Kept in its own
-// module because this file eagerly requires everything it resolves, which makes
-// it unusable from inside the engine's own dependency graph (engine.js ->
-// custommodels.js -> deps.js -> engine.js is a cycle, and the cycle resolves to
-// `createLocalEngine === undefined`). src/custommodels.js needs to locate one
-// shared file and nothing more, so it goes through sharedpaths.js instead.
+// module because this file eagerly requires everything it resolves, which
+// makes it unusable from inside the engine's own dependency graph.
 const { roots, resolveShared } = require('./sharedpaths.js');
 
 const clientPath = resolveShared(path.join('client', 'aegis.js'));
@@ -66,20 +63,11 @@ const updatePath = resolveShared(path.join('client', 'update.js'));
 // must work the SAME queue with the SAME rules (scoped commits included).
 const queuePath = resolveShared(path.join('desktop', 'lib', 'local', 'queue.js'));
 const autonomousPath = resolveShared(path.join('desktop', 'lib', 'local', 'autonomous.js'));
-// The direct-provider transport (openaiCompatible + anthropicMessages). The
-// desktop injects it into createLocalEngine for its custom-endpoint classes;
-// the CLI injects the same real module for its `custom` class (the /model add
-// catalog) rather than the throwing stub it shipped before. That catalog is
-// LOCAL-ONLY (see custommodels.js isLocalEndpoint): the free direct lane may
-// only carry an endpoint on this machine, and the engine's gate refuses a
-// remote base URL before this module is ever called.
-const providersPath = resolveShared(path.join('desktop', 'lib', 'local', 'providers.js'));
 
 const { createClient } = require(clientPath);
 const { createTools } = require(toolsPath);
 const { usageTokens } = require(usagePath);
 const { createLocalEngine } = require(enginePath);
-const providers = require(providersPath);
 const { createSettingsStore, isReservedNamespace } = require(settingsPath);
 const { agentRoles, agentRoleLabel } = require(agentsPath);
 const { buildSystemPrompt } = require(promptPath);
@@ -93,7 +81,6 @@ module.exports = {
   createTools,
   usageTokens,
   createLocalEngine,
-  providers,
   createSettingsStore,
   isReservedNamespace,
   agentRoles,
@@ -102,6 +89,6 @@ module.exports = {
   updater,
   queue,
   autonomous,
-  paths: { client: clientPath, tools: toolsPath, usage: usagePath, engine: enginePath, providers: providersPath, settings: settingsPath, agents: agentsPath, prompt: promptPath, update: updatePath, queue: queuePath, autonomous: autonomousPath },
+  paths: { client: clientPath, tools: toolsPath, usage: usagePath, engine: enginePath, settings: settingsPath, agents: agentsPath, prompt: promptPath, update: updatePath, queue: queuePath, autonomous: autonomousPath },
   roots,
 };
