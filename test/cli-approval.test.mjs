@@ -36,17 +36,19 @@ const settings = {
   rawKey: () => 'raw-key',
 };
 const aegis = { apiKey: 'k' };
-const ollama = { async probe() { return { running: true }; }, async listTags() { return []; } };
 
 /**
- * A provider that asks for `exec` on round 1 and stops on round 2 — so a single
- * approval decides the turn.
+ * A scripted aegis transport that asks for `exec` on round 1 and stops on
+ * round 2 — so a single approval decides the turn. This used to be a scripted
+ * `providers.openaiCompatible`; with only `aegis` + `byok` shipping, the aegis
+ * lane is the one that carries the approval gate, and it surfaces tool calls in
+ * the same OpenAI shape (see extractToolCalls in the vendored engine).
  */
-function oneShotProvider() {
+function oneShotAegis() {
   let n = 0;
   return {
     reset() { n = 0; },
-    async openaiCompatible() {
+    async chatCompletion() {
       n += 1;
       if (n === 1) {
         return {
@@ -72,12 +74,12 @@ function harness() {
     async executeTool(name, args) { ran.push([name, args]); return { ok: true, output: 'ran' }; },
     toolResultText: (r) => r.output,
   };
-  const provider = oneShotProvider();
-  const engine = createLocalEngine({ aegis, settings, ollama, providers: provider, tools });
+  const provider = oneShotAegis();
+  const engine = createLocalEngine({ aegis: { ...aegis, chatCompletion: provider.chatCompletion }, settings, tools });
   /** Drive one turn, answering every approval card with `decision`. */
   const turn = async (decision, sessionId = 's') => {
     const cards = [];
-    await engine.chat({ class: 'openai-compat', prompt: 'do it', model: 'x', sessionId }, (chunk) => {
+    await engine.chat({ class: 'aegis', prompt: 'do it', model: 'x', sessionId }, (chunk) => {
       if (chunk && chunk.approval) {
         cards.push(chunk.approval);
         if (decision) engine.respondApproval(chunk.approval.id, decision);

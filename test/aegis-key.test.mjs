@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 /**
- * Regression tests for the AEGIS-key wiring review (3 defects):
+ * Regression tests for the AEGIS-key / BYOK-key wiring review:
  *
  *   1. the in-app AEGIS key must live in a reserved namespace, never as a
  *      provider entry the Settings pane can list or remove;
- *   2. engine listClasses() must report custom endpoints as configured:false
- *      until they actually have a base URL (and, for anthropic, a key);
- *   3. providers.anthropicMessages() must omit x-api-key when no key is set.
+ *   2. listClasses() must report the 'byok' class as configured only when a
+ *      provider key actually resolves — a stored row with no key and no env
+ *      key is NOT configured;
+ *   3. the AEGIS account key must never leak into the BYOK lane: the relay
+ *      authenticates on the caller's own PROVIDER key, resolved from the store
+ *      (byok:<provider> row) and then from `~/.aegiscode/.env`.
  *
- * Also asserts the AEGIS key auth path by class: 'aegis' uses aegis.apiKey,
- * 'ollama' is keyless, and the direct custom classes use their own
- * settings-stored key + base URL — the AEGIS key never leaks into them.
+ * This build ships exactly 'aegis' (Aegis Cloud) and 'byok'. The custom
+ * direct-dial classes are gone, so `providers.anthropicMessages` (and the
+ * class-level assertions that used it) no longer exist; the transport they
+ * covered is asserted end-to-end in test/local-tools.test.mjs and
+ * test/autonomous-mode.test.mjs. `anthropic`/`openai`/`deepseek` below are
+ * BYOK *provider* ids, not model classes.
  */
 import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -25,7 +31,7 @@ const {
   isReservedNamespace,
 } = require('../desktop/lib/settings.js');
 const { createLocalEngine } = require('../desktop/lib/local/engine.js');
-const { anthropicMessages } = require('../desktop/lib/local/providers.js');
+const { envVarFor } = require('../client/env-file.js');
 const { createModelDispatch } = require('../desktop/main.js');
 
 function assert(cond, msg) {
@@ -37,14 +43,14 @@ const AEGIS_KEY = `aegis_${'x'.repeat(24)}`;
 const PROVIDER_KEY = `sk-${'p'.repeat(24)}`;
 const tmp = (n) => mkdtempSync(join(tmpdir(), `aegis-key-${n}-`));
 
-// Custom endpoints are LOCAL-ONLY by policy (desktop/lib/local/endpoints.js):
-// providers.js dials a base URL directly and bills nothing, so only an endpoint
-// on this machine may use the free lane. Remote providers go to the billed
-// relaying classes (aegis / byok). These suites test the transport and the key
-// plumbing, which are unchanged — so they point at loopback, and the policy
-// itself is asserted in test/endpoints.test.mjs.
+const byClass = async (engine) => {
+  const out = {};
+  for (const c of await engine.listClasses()) out[c.class] = c;
+  return out;
+};
+
+// Custom endpoints are LOCAL-ONLY by policy (see test/endpoints.test.mjs).
 const LOCAL_BASE = 'http://127.0.0.1:11434';
-const LOCAL_DIRECT = 'http://127.0.0.1:8080';
 
 // ---------------------------------------------------------------- defect #1
 {
@@ -102,8 +108,7 @@ const LOCAL_DIRECT = 'http://127.0.0.1:8080';
   const engine = createLocalEngine({
     aegis: { apiKey: AEGIS_KEY, listModels: async () => ({ models: [] }), chatCompletion: stub },
     settings: store,
-    ollama: { probe: async () => ({ running: false }), listTags: async () => [], chat: stub },
-    providers: { openaiCompatible: stub, anthropicMessages: stub },
+    getConfirmMode: () => false,
   });
   const dispatch = createModelDispatch(engine);
 
@@ -156,84 +161,28 @@ const LOCAL_DIRECT = 'http://127.0.0.1:8080';
     createLocalEngine({
       aegis: { apiKey: '', listModels: async () => ({ models: [] }) },
       settings,
-      ollama: { probe: async () => ({ running: false }), listTags: async () => [] },
-      providers: {},
+      getConfirmMode: () => false,
     });
 
-  const byClass = async (engine) => {
-    const out = {};
-    for (const c of await engine.listClasses()) out[c.class] = c;
-    return out;
-  };
-
-  // Unconfigured custom endpoints are NOT ready (the `undefined/v1/...` bug).
+  // A byok provider with a row but NO key anywhere (store or env) must NOT
+  // read as configured — `configured` is a key fact, never a row fact. A
+  // synthetic provider id keeps the control independent of whichever real
+  // provider keys happen to be exported in the test environment.
+  settings.set('byok:acme', { baseURL: LOCAL_BASE });
   let cls = await byClass(makeEngine());
-  assert(cls['openai-compat'].configured === false, 'unset openai-compat is not configured');
-  assert(cls.anthropic.configured === false, 'unset anthropic is not configured');
   assert(cls.aegis.configured === false, 'aegis without a key is not configured');
-  assert(cls.ollama.configured === false, 'ollama reports the probe result');
+  assert(cls.byok.configured === false, 'byok with a keyless row and no env key is not configured');
 
-  // A base URL alone makes an OpenAI-compatible endpoint usable…
-  settings.set('openai-compat', { baseURL: LOCAL_BASE });
-  settings.set('anthropic', { baseURL: LOCAL_BASE });
+  // A provider key in the store flips it on.
+  settings.set('byok:acme', { key: PROVIDER_KEY });
   cls = await byClass(makeEngine());
-  assert(cls['openai-compat'].configured === true, 'openai-compat with a base URL is configured');
-  assert(cls['openai-compat'].baseURL === LOCAL_BASE, 'base URL surfaced');
-  assert(cls.anthropic.configured === false, 'anthropic still needs its own key');
-
-  // …while Anthropic needs base URL + key.
-  settings.set('anthropic', { key: PROVIDER_KEY });
-  cls = await byClass(makeEngine());
-  assert(cls.anthropic.configured === true, 'anthropic configured with base URL + key');
-  assert(cls.anthropic.keyMask && cls.anthropic.keyMask !== PROVIDER_KEY, 'only a masked preview');
-
-  // A whitespace base URL is not a base URL.
-  settings.set('openai-compat', { baseURL: '   ' });
-  cls = await byClass(makeEngine());
-  assert(cls['openai-compat'].configured === false, 'blank base URL is unconfigured');
+  assert(cls.byok.configured === true, 'byok with a stored provider key is configured');
 }
 
-// ---------------------------------------------------------------- defect #3
-{
-  let lastFetch = null;
-  globalThis.fetch = async (url, opts) => {
-    lastFetch = { url, opts };
-    return new Response(
-      'data: {"type":"message_start","message":{"model":"claude-x"}}\n\n' +
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}\n\n' +
-        'data: [DONE]\n\n',
-      { status: 200, headers: { 'content-type': 'text/event-stream' } }
-    );
-  };
-
-  await anthropicMessages({
-    baseURL: 'https://proxy.example.com',
-    model: 'claude-x',
-    messages: [{ role: 'user', content: 'hi' }],
-  });
-  assert(
-    !('x-api-key' in lastFetch.opts.headers),
-    'no key configured → x-api-key header omitted entirely (not sent blank)'
-  );
-  assert(
-    lastFetch.opts.headers['anthropic-version'] === '2023-06-01',
-    'version header still present'
-  );
-
-  await anthropicMessages({
-    baseURL: 'https://proxy.example.com',
-    apiKey: PROVIDER_KEY,
-    model: 'claude-x',
-    messages: [{ role: 'user', content: 'hi' }],
-  });
-  assert(lastFetch.opts.headers['x-api-key'] === PROVIDER_KEY, 'x-api-key sent when set');
-}
-
-// ------------------------------------------- AEGIS key auth path by class
+// --------------------------------- AEGIS key never reaches the byok lane
 {
   const settings = createSettingsStore({ dir: tmp('auth') });
-  settings.set('openai-compat', { baseURL: LOCAL_DIRECT, key: PROVIDER_KEY });
-  settings.set('anthropic', { baseURL: LOCAL_DIRECT, key: PROVIDER_KEY });
+  settings.set('byok:openai', { key: PROVIDER_KEY });
   settings.setAegisKey(AEGIS_KEY);
 
   const seen = [];
@@ -247,70 +196,105 @@ const LOCAL_DIRECT = 'http://127.0.0.1:8080';
         seen.push(['chatCompletion', args]);
         return { model: args.model, choices: [{ message: { content: 'ok' } }] };
       },
+      // The BYOK lane goes through the relay, which authenticates on the
+      // caller's OWN provider key and attaches the account key itself.
+      async byokChatCompletion(args) {
+        seen.push(['byok', args]);
+        return { model: args.model, choices: [{ message: { content: 'ok' } }] };
+      },
     },
     settings,
-    ollama: {
-      async probe() {
-        return { running: true };
-      },
-      async listTags() {
-        return [];
-      },
-      async chat(args) {
-        seen.push(['ollama', args]);
-        return { model: args.model, choices: [{ message: { content: 'ok' } }] };
-      },
-    },
-    providers: {
-      async openaiCompatible(args) {
-        seen.push(['openai-compat', args]);
-        return { model: args.model, choices: [{ message: { content: 'ok' } }] };
-      },
-      async anthropicMessages(args) {
-        seen.push(['anthropic', args]);
-        return { model: args.model, choices: [{ message: { content: 'ok' } }] };
-      },
-    },
+    getConfirmMode: () => false,
   });
 
   await engine.chat({ class: 'aegis', prompt: 'hi', model: 'm' }, () => {});
-  await engine.chat({ class: 'ollama', prompt: 'hi', model: 'llama3' }, () => {});
+  await engine.chat({ class: 'byok', prompt: 'hi', model: 'openai:gpt-4o-mini' }, () => {});
 
   const byName = Object.fromEntries(seen);
   assert(byName.chatCompletion, 'aegis routes to the AEGIS-authenticated chatCompletion');
-  assert(byName.ollama && !('apiKey' in byName.ollama), 'ollama is keyless');
+  assert(byName.byok, 'byok routes through the relay (byokChatCompletion)');
   assert(
-    !JSON.stringify([byName.ollama]).includes(AEGIS_KEY),
-    'the AEGIS key never reaches the local ollama transport'
+    byName.byok.provider === 'openai' && byName.byok.model === 'gpt-4o-mini',
+    'the byok lane splits "<provider>:<model>" for the relay'
   );
+  assert(byName.byok.providerKey === PROVIDER_KEY, 'byok spends the PROVIDER key from its own store row');
+  assert(byName.byok.providerKey !== AEGIS_KEY, 'the AEGIS key is never used as a provider key');
+  assert(
+    !JSON.stringify(byName.byok).includes(AEGIS_KEY),
+    'the AEGIS key never reaches the byok relay arguments'
+  );
+}
 
-  if (!byName['openai-compat'] || !byName.anthropic) {
-    const direct = createLocalEngine({
-      aegis: { apiKey: AEGIS_KEY },
-      settings,
-      ollama: { probe: async () => ({ running: true }), listTags: async () => [] },
-      providers: {
-        async openaiCompatible(args) {
-          seen.push(['openai-compat', args]);
-          return { model: args.model, choices: [{ message: { content: 'ok' } }] };
-        },
-        async anthropicMessages(args) {
-          seen.push(['anthropic', args]);
+// ------------------------------------------- BYOK key from ~/.aegiscode/.env
+{
+  const dir = tmp('envfile');
+  const settings = createSettingsStore({ dir });
+
+  assert(envVarFor('openai') === 'OPENAI_API_KEY', `openai maps to OPENAI_API_KEY, got ${envVarFor('openai')}`);
+  assert(envVarFor('deepseek') === 'DEEPSEEK_API_KEY', 'deepseek maps to DEEPSEEK_API_KEY');
+  assert(envVarFor('byok:anthropic') === 'ANTHROPIC_API_KEY', 'a byok: prefixed row maps to the same provider var');
+
+  const envVar = envVarFor('openai');
+  const prior = process.env[envVar];
+  try {
+    const engine = createLocalEngine({
+      aegis: {
+        apiKey: AEGIS_KEY,
+        listModels: async () => ({ models: [] }),
+        byokProviders: async () => ({
+          providers: [{ id: 'openai', label: 'OpenAI', models: ['gpt-4o-mini'] }],
+          fee: null,
+        }),
+        async byokChatCompletion(args) {
           return { model: args.model, choices: [{ message: { content: 'ok' } }] };
         },
       },
+      settings,
+      getConfirmMode: () => false,
     });
-    await direct.chat({ class: 'openai-compat', prompt: 'hi', model: 'x' }, () => {});
-    await direct.chat({ class: 'anthropic', prompt: 'hi', model: 'x' }, () => {});
-  }
 
-  const direct = seen.find((s) => s[0] === 'openai-compat')[1];
-  assert(direct.apiKey === PROVIDER_KEY, 'custom OpenAI endpoint uses its own key');
-  assert(direct.baseURL === LOCAL_DIRECT, 'custom OpenAI endpoint uses its own base URL');
-  assert(direct.apiKey !== AEGIS_KEY, 'the AEGIS key is never used for a custom endpoint');
-  const anthropicCall = seen.find((s) => s[0] === 'anthropic')[1];
-  assert(anthropicCall.apiKey === PROVIDER_KEY, 'anthropic class uses its own key');
-  assert(anthropicCall.apiKey !== AEGIS_KEY, 'the AEGIS key is never used for anthropic');
+    // A row exists for the provider but holds NO key, and nothing is in the
+    // environment yet — the negative control.
+    settings.set('byok:openai', {});
+    delete process.env[envVar];
+    let cls = await byClass(engine);
+    assert(cls.byok.configured === false, 'no stored key and no env key → byok is not configured');
+
+    // Now the key exists ONLY as OPENAI_API_KEY (what loading
+    // `~/.aegiscode/.env` produces). It must read as configured.
+    process.env[envVar] = PROVIDER_KEY;
+
+    cls = await byClass(engine);
+    assert(cls.byok.configured === true, 'a key present only as OPENAI_API_KEY reads as configured');
+
+    const models = await engine.listModels('byok');
+    assert(models.models.length > 0, 'the byok catalog is listed');
+    assert(
+      models.models.every((m) => m.configured === true),
+      'listModels reports the provider configured straight from the env key'
+    );
+    assert(models.needsProviderKey === false, 'needsProviderKey is cleared by the env-file key');
+
+    // …and chat() actually spends it, without any stored row holding a key.
+    let spent = null;
+    const runEngine = createLocalEngine({
+      aegis: {
+        apiKey: AEGIS_KEY,
+        async byokChatCompletion(args) {
+          spent = args;
+          return { model: args.model, choices: [{ message: { content: 'ok' } }] };
+        },
+      },
+      settings,
+      getConfirmMode: () => false,
+    });
+    await runEngine.chat({ class: 'byok', prompt: 'hi', model: 'openai:gpt-4o-mini' }, () => {});
+    assert(spent && spent.providerKey === PROVIDER_KEY, 'chat() resolves the env-file key for the provider');
+    assert(spent.providerKey !== AEGIS_KEY, 'the env-file lane still never spends the AEGIS key');
+  } finally {
+    if (prior === undefined) delete process.env[envVar];
+    else process.env[envVar] = prior;
+  }
 }
 
 console.log('aegis-key tests passed');

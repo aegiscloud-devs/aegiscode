@@ -456,42 +456,39 @@ const DIAGNOSE = `
 `;
 
 /**
- * The third leg of the local-only endpoint policy (lib/local/endpoints.js).
+ * PLAN Phase 15 (D1): the removed model classes are genuinely gone.
  *
- * The policy refuses a remote base URL at two seams: the settings store (so the
- * unusable row cannot be CREATED) and dispatch (so a row hand-edited onto disk
- * cannot be DIALED). Neither seam can help a user who already has such a row —
- * the class simply stops working, with no way out of the Settings pane, because
- * saving a remote URL is exactly what is refused. That recovery is the
- * renderer's job: clicking a Model-card preset on a BLOCKED class must REPLACE
- * the refused URL. It is the one case applyCustomPreset() may overwrite a
- * configured endpoint (see blockedCustomClasses); every other click must still
- * refuse to clobber, or a stray preset click could silently repoint a working
- * local server.
+ * This build ships exactly two classes (`aegis` and `byok`). The three
+ * direct-dial classes that used to live here — `openai-compat`, `anthropic` and
+ * `ollama` (and the `custom:*` variants) — have been removed, along with the
+ * local-only endpoint policy module (lib/local/endpoints.js) that policed their
+ * `baseURL` rows. The leg this function replaces tested that policy AS BEHAVIOUR
+ * (a refused remote URL on a blocked class had to be REPAIRED by a preset click,
+ * and a working local row had to be left alone). None of that machinery exists
+ * any more, so asserting it would be fabricating evidence — exactly what this
+ * suite exists to prevent. It becomes a NEGATIVE CONTROL that locks the removal
+ * in place instead.
  *
- * Asserted in the REAL DOM, because the failure mode is a silent no-op:
- * applyCustomPreset() returns early when its `row.querySelector('.setting-base')`
- * lookup comes back empty, so a selector that drifted from buildSettingRow()'s
- * markup would leave the row permanently unrepairable while every unit test
- * stayed green. Only renderSettings()'s actual output can prove the two agree.
- *
- * The refused row is seeded through the settings FILE rather than the Settings
- * pane — deliberately: the storage seam now refuses to write a remote URL, so a
- * hand-edited settings.json IS the state under test. lib/settings.js re-reads
- * the file on every get(), so the STORE sees this write immediately — but the
- * settings PANE rows are only built by loadSettings(), which runs at boot and
- * after a save, so the reload below is what puts the seeded URL into the field.
+ * Stronger than "the class is absent from the options list": a stale
+ * settings.json can still carry a removed class's row — any user who configured
+ * one before the upgrade has exactly that — so the store is SEEDED with such
+ * rows and the renderer rebooted through the REAL boot path. The assertions then
+ * hold against that state: the class picker (built by loadClasses() from the
+ * engine's CLASSES registry) must not offer a removed class, selecting one must
+ * not take, and the settings pane must not render a usable row for it. A
+ * resurrection anywhere in the registry would fail here, in the real DOM.
  */
-async function presetRepairPhase(win) {
+async function removedClassesPhase(win) {
   const fs = require('fs');
   const path = require('path');
 
-  // A remote URL: refused by the policy. A local URL that no preset names, so
-  // the "never clobber" branch has something to preserve.
-  const REFUSED = 'https://api.z.ai/v1';
-  const REPAIR = 'http://127.0.0.1:11434/v1';
-  const KEPT = 'http://127.0.0.1:9999';
+  // The classes this build dropped. Kept as a list so every assertion below is
+  // stated over all of them, not just the one that used to drive the turn.
+  const REMOVED = ['openai-compat', 'anthropic', 'ollama'];
 
+  // Seed a stale row per removed class: the shape a pre-upgrade install has on
+  // disk. Nothing reads a baseURL any more, so the value is arbitrary — the
+  // point is that the row EXISTS and must be ignored, not resurrected.
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
   let stored = {};
   try {
@@ -499,33 +496,16 @@ async function presetRepairPhase(win) {
   } catch {
     /* first boot in this temp profile: nothing stored yet */
   }
+  const seeded = { ...stored };
+  for (const cls of REMOVED) {
+    seeded[cls] = { ...(seeded[cls] || {}), baseURL: 'https://api.example.invalid/v1' };
+  }
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(
-    settingsPath,
-    JSON.stringify(
-      {
-        ...stored,
-        'openai-compat': { ...(stored['openai-compat'] || {}), baseURL: REFUSED },
-        anthropic: { ...(stored.anthropic || {}), baseURL: KEPT },
-      },
-      null,
-      2
-    ),
-    { mode: 0o600 }
-  );
+  fs.writeFileSync(settingsPath, JSON.stringify(seeded, null, 2), { mode: 0o600 });
 
-  // Reload THROUGH THE REAL BOOT PATH before touching anything.
-  //
-  // The rows in the Settings pane are rendered by loadSettings(), which runs at
-  // renderer boot and after a save — never on a file change. Writing
-  // settings.json behind a running app therefore leaves the pane displaying the
-  // STARTUP config, and that is not a cosmetic detail here: the branch under
-  // test reads the FIELD's value (`current: baseInput.value.trim()` in
-  // applyCustomPreset), so a stale row makes both subjects of this leg
-  // meaningless — the refused URL was never in the field, and neither was the
-  // endpoint the "never clobber" rule is supposed to protect. Reloading re-runs
-  // init() → loadSettings() against the seeded file, which IS the state a user
-  // who already has such a row boots into.
+  // Reload THROUGH THE REAL BOOT PATH. loadClasses() runs at renderer boot (and
+  // on a class switch), never on a file change, so writing settings.json behind
+  // a running app would not otherwise reach the picker.
   win.webContents.reload();
   await waitFor(
     () =>
@@ -536,179 +516,56 @@ async function presetRepairPhase(win) {
     'renderer reboot on the seeded settings'
   );
 
-  const selectClass = (cls) =>
-    js(
+  // The picker is loadClasses()'s actual output, built from models.listClasses()
+  // -> the engine's CLASSES registry. This is the primary assertion: the removed
+  // classes are absent and the two survivors are present.
+  const options = await js(
+    win,
+    `return Array.prototype.map.call(document.getElementById('class-select').options, function (o) { return o.value; });`
+  );
+  check(
+    'removed-classes-absent-from-picker',
+    REMOVED.every((cls) => !options.includes(cls)) &&
+      options.includes('aegis') &&
+      options.includes('byok'),
+    `the picker must offer exactly the surviving classes (aegis, byok); observed ` +
+      `${JSON.stringify(options)} with the removed-class rows seeded at ${settingsPath}`
+  );
+
+  // Selecting a class that is not in the registry must NOT take. The value is
+  // written and `change` dispatched exactly as a user interaction would; with no
+  // matching <option>, Chromium resets the control to no selection, so a
+  // read-back equal to the removed id would prove the option still exists.
+  const attempts = {};
+  for (const cls of REMOVED) {
+    attempts[cls] = await js(
       win,
       `var s = document.getElementById('class-select');
        s.value = ${JSON.stringify(cls)};
        s.dispatchEvent(new Event('change', { bubbles: true }));
        return s.value;`
     );
+  }
+  check(
+    'removed-class-select-refused',
+    REMOVED.every((cls) => attempts[cls] !== cls),
+    `selecting a removed class must not take: read back ${JSON.stringify(attempts)}`
+  );
 
-  const READ = `
-    var cls = document.getElementById('class-select').value;
-    var row = document.querySelector('#settings-list .setting-row[data-provider="' + cls + '"]');
-    var base = row ? row.querySelector('.setting-base') : null;
-    var preset = document.getElementById('model-preset');
-    return {
-      cls: cls,
-      rowFound: Boolean(row),
-      baseValue: base ? base.value : null,
-      hint: document.getElementById('model-hint').textContent,
-      modelInput: document.getElementById('model-input').value,
-      presetOptions: Array.prototype.map.call(preset.options, function (o) { return o.value; }),
-    };
-  `;
-
-  // The real click: the preset <select>'s change handler is what calls
-  // applyCustomPreset() (app.js: `applyCustomPreset(els.classSelect.value,
-  // els.modelPreset.value)`), so setting the value and dispatching the event is
-  // the same path a user takes.
-  const clickPreset = (modelId) =>
-    js(
-      win,
-      `var p = document.getElementById('model-preset');
-       p.value = ${JSON.stringify(modelId)};
-       p.dispatchEvent(new Event('change', { bubbles: true }));
-       return p.value;`
-    );
-
-  // Polling that RETURNS the last state instead of throwing. A `waitFor`
-  // timeout here would report only "timed out", which is useless for a failure
-  // whose whole subject is WHICH of (row exists / row holds the refused URL /
-  // the reason reached the hint) came back wrong — so the checks below quote
-  // the observed state.
-  const pollUntil = async (pred, timeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
-    let last = await js(win, READ);
-    while (!pred(last) && Date.now() < deadline) {
-      await sleep(100);
-      last = await js(win, READ);
-    }
-    return last;
-  };
-
-  // ── blocked class: the refused URL must be replaced ──────────────────────
-  const switched = await selectClass('openai-compat');
-  const classOptions = await js(
+  // No provider row may render for a removed class: the settings pane lists only
+  // `byok:<provider>` rows, and a surviving row would be a usable affordance for
+  // a class the engine can no longer dispatch.
+  const rows = await js(
     win,
-    `return Array.prototype.map.call(document.getElementById('class-select').options, function (o) { return o.value; });`
+    `return Array.prototype.map.call(document.querySelectorAll('#settings-list .setting-row'), function (r) { return r.dataset.provider; });`
   );
   check(
-    'blocked-class-selectable',
-    switched === 'openai-compat',
-    `class picker did not accept openai-compat (options=${JSON.stringify(classOptions)}); ` +
-      `settings.json written to ${settingsPath}`
+    'removed-classes-have-no-settings-row',
+    REMOVED.every((cls) => !(rows || []).includes(cls)),
+    `settings rows=${JSON.stringify(rows)} — a seeded ${JSON.stringify(REMOVED)} row must not render`
   );
 
-  const blocked = await pollUntil(
-    (s) => s.rowFound && s.baseValue === REFUSED && /must be LOCAL/.test(s.hint),
-    8000
-  );
-
-  // The FIELD is asserted alongside the hint, not just the hint: the repair
-  // branch below is chosen from the field's value, so a row that rendered empty
-  // (the bug this phase first shipped with — a pane built before the seed) would
-  // reach that branch by accident and report a pass for the wrong reason.
-  check(
-    'blocked-row-is-visible-with-reason',
-    blocked.rowFound && blocked.baseValue === REFUSED && /must be LOCAL/.test(blocked.hint),
-    `seeded ${REFUSED}; the pane must SHOW it and explain the refusal. Observed ` +
-      `${JSON.stringify(blocked)} (settings.json at ${settingsPath}, ` +
-      `classes=${JSON.stringify(classOptions)})`
-  );
-  check(
-    'blocked-preset-offered',
-    Array.isArray(blocked.presetOptions) && blocked.presetOptions.includes('llama3.2'),
-    `a blocked class enumerates no models, so the quick-fill presets must still ` +
-      `be offered: options=${JSON.stringify(blocked.presetOptions)}`
-  );
-
-  const clicked = await clickPreset('llama3.2');
-  const repaired = await js(win, READ);
-  check('preset-click-applied', clicked === 'llama3.2', `preset select value=${JSON.stringify(clicked)}`);
-  check(
-    'preset-click-replaced-refused-url',
-    repaired.baseValue === REPAIR,
-    `clicking a preset on a blocked row must overwrite the refused URL ` +
-      `${REFUSED} with ${REPAIR} (got ${JSON.stringify(repaired.baseValue)}) — ` +
-      `otherwise the local-only policy leaves the class unfixable`
-  );
-  check(
-    'preset-click-filled-model-id',
-    repaired.modelInput === 'llama3.2',
-    `model id field=${JSON.stringify(repaired.modelInput)}`
-  );
-  check(
-    'preset-click-hint-names-the-repair',
-    /refused/.test(repaired.hint),
-    `the hint must say the refused endpoint was replaced: ${JSON.stringify(repaired.hint.slice(0, 200))}`
-  );
-
-  // ── working local row: the click must NOT clobber ────────────────────────
-  // The regression this guards: if the blocked exception were ever widened to
-  // every class (or every click), a preset click would repoint a working local
-  // server without asking. The row above proves the repair works; this proves
-  // it stays narrow.
-  await selectClass('anthropic');
-  // Wait for THIS class's own render, not merely for a state the previous leg
-  // happened to leave behind.
-  //
-  // The first version of this leg polled for `rowFound && baseValue === KEPT &&
-  // !/must be LOCAL/.test(hint)` — and every one of those three is satisfied by
-  // the state the openai-compat leg ends in, because the settings pane lists
-  // every provider regardless of class and the hint test was NEGATIVE (the
-  // repair text from the leg above is not "must be LOCAL"). So the poll could
-  // return before loadModels('anthropic') had resolved, the click then wrote
-  // its mismatch hint, and the late-resolving loadModels overwrote it with
-  // `endpoint: … · key: …` a few ms later. That is a real, timing-dependent
-  // flake: it failed once and passed on an identical rerun. Anchoring on
-  // class-specific text (`endpoint: ${KEPT}`, which only this class's loadModels
-  // writes) removes the window by construction rather than by hoping.
-  //
-  // The blocked leg above never flaked for the same reason: its predicate keys
-  // on `must be LOCAL`, which only the blocked loadModels render produces.
-  const localRow = await pollUntil(
-    (s) => s.rowFound && s.baseValue === KEPT && s.hint.includes(`endpoint: ${KEPT}`),
-    5000
-  );
-  // Precondition, asserted rather than assumed. Every branch of planPresetFill()
-  // is chosen from this field, so a row that displayed empty would take the
-  // "fill it in" branch and the two checks below would then be reporting on the
-  // wrong rule entirely (that is exactly how the first version of this phase
-  // passed its blocked leg and failed here). The hint is included for the same
-  // reason: it proves the class's own loadModels has landed, so nothing is left
-  // in flight that could overwrite what the click writes.
-  check(
-    'local-row-shows-configured-endpoint',
-    localRow.rowFound && localRow.baseValue === KEPT && localRow.hint.includes(`endpoint: ${KEPT}`),
-    `the pane must display the configured local endpoint ${KEPT} AND that class's own ` +
-      `model hint before the click (a late loadModels render must not still be in ` +
-      `flight); observed ${JSON.stringify(localRow)}`
-  );
-
-  const localClicked = await clickPreset('local-model');
-  const afterLocal = await js(win, READ);
-  check(
-    'local-preset-click-applied',
-    localClicked === 'local-model',
-    `preset select value=${JSON.stringify(localClicked)}`
-  );
-  check(
-    'local-row-not-clobbered',
-    afterLocal.baseValue === KEPT,
-    `a preset click on a NON-blocked row must leave the configured endpoint ` +
-      `alone: expected ${KEPT}, got ${JSON.stringify(afterLocal.baseValue)}`
-  );
-  check(
-    'local-mismatch-hint-says-so',
-    /needs base URL/.test(afterLocal.hint),
-    `when the field disagrees with the preset the hint must say so instead of ` +
-      `writing: ${JSON.stringify(afterLocal.hint.slice(0, 200))} ` +
-      `(pre-click hint was ${JSON.stringify(String(localRow.hint || '').slice(0, 200))})`
-  );
-
-  return { blocked, repaired, localRow, afterLocal, refused: REFUSED, repair: REPAIR, kept: KEPT };
+  return { options, attempts, rows, seeded: REMOVED };
 }
 
 /**
@@ -730,8 +587,8 @@ async function presetRepairPhase(win) {
  *      user with that text, labelled `reasoning only`, instead of an empty
  *      bubble.
  *
- * Runs after the chat phase and before `presetRepairPhase`, which must stay
- * last because it switches the class picker off Aegis Cloud.
+ * Runs after the chat phase and before `removedClassesPhase`, which must stay
+ * last because it reloads the renderer behind the running app.
  */
 async function stopEdgesPhase(win) {
   const out = {};
@@ -1212,10 +1069,11 @@ async function main() {
   // stays here so the preset phase below remains the last one.
   const toolMarks = await toolMarkPhase(win);
 
-  // The local-only endpoint policy's recovery leg. Runs LAST on purpose: it
-  // switches the class picker off Aegis Cloud, which the chat phase above
-  // depends on, and it rewrites settings.json behind the running app.
-  const presetRepair = await presetRepairPhase(win);
+  // Phase 15's negative control: the three direct-dial classes are genuinely
+  // gone. Runs LAST on purpose — it rewrites settings.json with stale
+  // removed-class rows and then reloads the renderer, which the chat phase
+  // above could not survive.
+  const removedClasses = await removedClassesPhase(win);
 
   return {
     prepared,
@@ -1247,7 +1105,7 @@ async function main() {
     },
     stopEdges,
     toolMarks,
-    presetRepair,
+    removedClasses,
     scrollUp,
     before,
     held,

@@ -45,10 +45,6 @@ const os = require('node:os');
 
 const toolsModule = require('./tools.js');
 const promptModule = require('./prompt.js');
-// The direct-dial policy: which base URLs may reach a provider transport, and
-// why a remote one is refused rather than metered. The same module the CLI
-// resolves (cli/src/custommodels.js), so both hosts answer with one rule.
-const { isLocalEndpoint, remoteRefusal } = require('./endpoints.js');
 const { ShellSession } = require('./shell.js');
 const { agentSystemPrompt, agentRoleLabel } = require('./agents.js');
 // Cooperative working-tree sharing (see each module's header). The lock
@@ -60,6 +56,24 @@ const { agentSystemPrompt, agentRoleLabel } = require('./agents.js');
 // and the terminal get one implementation rather than two that drift.
 const { beginTurnGuard, recordWrite, blocksDestructive } = require('./turn-guard.js');
 const { acquireWorktreeLock, releaseWorktreeLock } = require('./worktree-lock.js');
+
+// `~/.aegiscode/.env` — the shared key file both hosts load at startup, so
+// "put your key in the env file" is the whole setup instruction for either app.
+// Optional by design, and resolved the same two ways this repo resolves every
+// shared module: repo-relative in a checkout AND in the CLI's mirrored vendor
+// tree (cli/vendor/client/env-file.js), then the staged app-dir copy a packaged
+// desktop build carries. Absent in all three, `envFile` stays null and byok
+// reads the encrypted store alone — exactly the behaviour before this file.
+let envFile = null;
+try {
+  envFile = require('../../../client/env-file.js');
+} catch {
+  try {
+    envFile = require('../../vendor/env-file.js');
+  } catch {
+    envFile = null;
+  }
+}
 
 /**
  * How long a turn waits for the working-tree lock before running anyway.
@@ -74,9 +88,6 @@ const { acquireWorktreeLock, releaseWorktreeLock } = require('./worktree-lock.js
  */
 const WORKTREE_LOCK_WAIT_MS = 1500;
 
-/** Classes whose transport is a user-supplied endpoint + credential. */
-const CUSTOM_CLASSES = Object.freeze(['openai-compat', 'anthropic']);
-
 /**
  * Depth at which the task tool stops being offered. The main chat (depth 0)
  * and subagents down to depth MAX_SUBAGENT_DEPTH - 1 can all delegate, so
@@ -86,20 +97,23 @@ const CUSTOM_CLASSES = Object.freeze(['openai-compat', 'anthropic']);
  */
 const MAX_SUBAGENT_DEPTH = 4;
 
+// The two shipping classes — kept in lockstep with the CLI's HOST_CLASSES
+// (cli/src/engine.js). 'anthropic'/'openai'/'deepseek' still appear in this
+// file as BYOK *provider* ids: upstream names, never model classes.
 const CLASSES = [
   { class: 'aegis', label: 'Aegis Cloud', kind: 'cloud' },
-  { class: 'ollama', label: 'Ollama (local)', kind: 'local' },
-  { class: 'openai-compat', label: 'Custom OpenAI-compatible', kind: 'custom' },
-  { class: 'anthropic', label: 'Anthropic-compatible', kind: 'custom' },
   { class: 'byok', label: 'Bring your own key', kind: 'cloud' },
 ];
 
-/** Local settings namespace for one BYOK provider's key. A `byok:` prefix
- *  keeps this out of the 'anthropic'/'openai-compat' CUSTOM_CLASSES' own
- *  namespaces, which are a different feature (a self-hosted/compatible
- *  endpoint's base URL + key) — same store, deliberately separate rows. */
+/** Local settings namespace for one BYOK provider's key. The `byok:` prefix
+ *  keeps a provider key (e.g. 'anthropic' the *provider*) in its own row out
+ *  of every model class's row in the same store — one flat 'byok' row could
+ *  not hold two providers' keys at once. Named once here because two callers
+ *  now need to take the provider back OUT of a row name. */
+const BYOK_NAMESPACE_PREFIX = 'byok:';
+
 function byokNamespace(providerId) {
-  return `byok:${providerId}`;
+  return `${BYOK_NAMESPACE_PREFIX}${providerId}`;
 }
 
 /** Split a byok model id ("anthropic:claude-sonnet-5") into its provider and
@@ -111,6 +125,28 @@ function splitByokModel(compound) {
   const i = s.indexOf(':');
   if (i < 0) return { provider: '', model: s };
   return { provider: s.slice(0, i), model: s.slice(i + 1) };
+}
+
+/**
+ * The BYOK key an environment variable supplies for a provider, if any — from
+ * `~/.aegiscode/.env` (loaded into the environment at host startup via
+ * `client/env-file.js`) or an explicit shell export. '' when neither has one,
+ * which leaves the encrypted store the only source, exactly as before.
+ *
+ * Read HERE and not inside lib/settings.js on purpose. The store's contract is
+ * "what I persisted": its tests assert `configured === false` after a
+ * remove(), and a store that silently answered from the environment would break
+ * that — and would make a provider look configured to code that never learns
+ * where the key came from. The resolution chain (store first, environment
+ * second) belongs to the class that spends the key, which is this one.
+ */
+function providerKeyFromEnv(provider) {
+  if (!envFile || typeof envFile.providerKeyFromEnv !== 'function') return '';
+  try {
+    return envFile.providerKeyFromEnv(provider).key || '';
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -133,12 +169,6 @@ function splitByokModel(compound) {
  */
 const DEEPSEEK_REASONING_MODEL_RE = /^deepseek-(v4(\.\d+)?-(flash|pro)|flash|pro|reasoner)$/;
 const EFFORT_TOKEN_BUDGET = { low: 8192, medium: 16384, high: 32768 };
-
-/** The one class whose wire format REQUIRES a stated `max_tokens`: Anthropic's
- *  Messages API 400s without it, so that field is derived from the effort rung
- *  rather than invented by the transport (which is what a blanket
- *  `max_tokens: maxTokens || 4096` did — see providers.anthropicMessages). */
-const REQUIRES_STATED_BUDGET = new Set(['anthropic']);
 
 /**
  * Idle-stream budget for a pooled brain call ("work autonomously"). The
@@ -174,8 +204,7 @@ const AUTONOMOUS_IDLE_TIMEOUT_MS = 15 * 60_000;
  *      so a caller asking for 1024 silently ran on 32768.
  *   2. with nothing stated, a model that reasons against its own output budget
  *      (DeepSeek bills hidden chain-of-thought against the SAME budget as the
- *      answer) or a class whose wire format REQUIRES the field (Anthropic's
- *      Messages API) gets the Effort rung. This is why the renderer's
+ *      answer) gets the Effort rung. This is why the renderer's
  *      max-tokens dropdown was removed rather than fixed: at its 4k default a
  *      reasoning model spent the entire budget thinking and finished empty —
  *      no error, no tool call, just a "completed" turn with nothing in it.
@@ -187,10 +216,10 @@ const AUTONOMOUS_IDLE_TIMEOUT_MS = 15 * 60_000;
  * doubled-budget retry plus emptyTurnError — rather than by inflating the
  * caller's ceiling up front.
  */
-function reasoningBudget(cls, model, maxTokens, effort) {
+function reasoningBudget(model, maxTokens, effort) {
   const stated = Number(maxTokens);
   if (Number.isFinite(stated) && stated > 0) return stated;
-  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || '')) || REQUIRES_STATED_BUDGET.has(cls)) {
+  if (DEEPSEEK_REASONING_MODEL_RE.test(String(model || ''))) {
     const eff = effort === 'low' || effort === 'medium' ? effort : 'high';
     return EFFORT_TOKEN_BUDGET[eff];
   }
@@ -394,7 +423,7 @@ function emptyTurnError({ cls, model, maxTokens, finishReason }) {
   return err;
 }
 
-function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBuilder, env, getConfirmMode }) {
+function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConfirmMode }) {
   const controllers = new Map(); // sessionId -> AbortController
   const T = tools || toolsModule;
   const buildSystemPrompt = (promptBuilder && promptBuilder.buildSystemPrompt) || promptModule.buildSystemPrompt;
@@ -656,54 +685,35 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
     return guardedExecute(name, args, toolCtx);
   }
 
-  /**
-   * Custom endpoints are only usable when they are actually configured:
-   * a base URL is mandatory for both, and Anthropic additionally needs its own
-   * key (the wire format authenticates with x-api-key). Reporting them as
-   * always-ready made chat() POST to `${undefined}/v1/…` (defect #2).
-   *
-   * A stored REMOTE base URL is reported as not-configured rather than ready,
-   * plus `blocked` and the reason. This is the third face of the direct-dial
-   * gate (storage in settings.js set, dispatch in chat below): a row that
-   * predates the rule must not be OFFERED either, or the class list advertises
-   * a lane the turn then refuses. The reason travels so the UI can explain it
-   * instead of showing a dead row — and it is recoverable by design: saving a
-   * local URL (or clearing the field) makes the class usable again, which is
-   * what the refusal text tells the user to do.
-   */
-  function customStatus(cls) {
-    const cfg = settings.get(cls) || {};
-    const baseURL = typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
-    const hasBase = Boolean(baseURL);
-    const hasKey = Boolean(cfg.configured);
-    const blocked = hasBase && !isLocalEndpoint(baseURL);
-    return {
-      configured: !blocked && (cls === 'anthropic' ? hasBase && hasKey : hasBase),
-      blocked,
-      ...(blocked ? { blockedReason: remoteRefusal(baseURL, { subject: `the ${cls} endpoint` }) } : {}),
-      baseURL,
-      keyMask: cfg.keyMask || null,
-    };
-  }
-
   async function listClasses() {
-    const status = await ollama.probe().catch(() => ({ running: false }));
     return CLASSES.map((c) => {
-      if (c.class === 'ollama') return { ...c, configured: Boolean(status.running) };
       if (c.class === 'aegis') {
         return { ...c, configured: Boolean(aegis.apiKey) };
       }
       if (c.class === 'byok') {
-        // Configured means "at least one provider has a locally-stored key",
-        // not a single baseURL+key pair like the CUSTOM_CLASSES below — byok
-        // holds one row per provider (byokNamespace), so customStatus's shape
-        // does not apply here.
-        const anyConfigured = (settings.list() || []).some(
-          (s) => s && typeof s.provider === 'string' && s.provider.startsWith('byok:') && s.configured
-        );
+        // Configured means "this host could actually spend a key for at least
+        // one provider" — byok holds one row per provider (byokNamespace), so
+        // there is no single baseURL+key pair to report. A row whose key lives
+        // in `~/.aegiscode/.env` counts: that is the whole point of reading the
+        // file, and calling it unconfigured would send the user to a Settings
+        // row they do not need. A stored key still short-circuits, so an install
+        // with no env file pays one lookup per stored row and nothing else.
+        //
+        // The authoritative per-provider answer is `listModels`, which has the
+        // server's catalog and so can name a provider the user has never opened
+        // Settings for. This one can only see providers with a stored row.
+        const rows = settings.list() || [];
+        const anyConfigured = rows.some((s) => {
+          if (!s || typeof s.provider !== 'string' || !s.provider.startsWith('byok:')) return false;
+          if (s.configured) return true;
+          return Boolean(providerKeyFromEnv(s.provider.slice(BYOK_NAMESPACE_PREFIX.length)));
+        });
         return { ...c, configured: anyConfigured };
       }
-      return { ...c, ...customStatus(c.class) };
+      // Unreachable while CLASSES lists only aegis + byok; kept so a future
+      // class added without a status rule reads as unconfigured rather than
+      // silently appearing ready (the "no saved key" fallback shape).
+      return { ...c, configured: false };
     });
   }
 
@@ -722,10 +732,6 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       if (!aegis.apiKey) return { class: cls, models: [], needsKey: true };
       const data = await aegis.listModels();
       return { class: cls, models: filterAegisCatalog(normalizeCatalog(data && data.models)) };
-    }
-    if (cls === 'ollama') {
-      const tags = await ollama.listTags();
-      return { class: cls, models: tags.map((t) => ({ id: t.id })) };
     }
     if (cls === 'byok') {
       // The server's catalog names every provider it accepts a key for, the
@@ -758,6 +764,12 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       for (const p of providers) {
         if (!p || !p.id) continue;
         const local = settings.get(byokNamespace(p.id)) || {};
+        // A key from `~/.aegiscode/.env` makes the provider usable, so it must
+        // read as configured here — this is the flag `needsProviderKey` is built
+        // on, and the one the renderer's per-provider rows mirror. Reporting it
+        // unconfigured while `chat()` happily spends the env key is exactly the
+        // "no saved key" contradiction this file removes.
+        const fromEnv = providerKeyFromEnv(p.id);
         const rawModels = Array.isArray(p.models) ? p.models : [];
         for (const m of rawModels) {
           const modelId = typeof m === 'string' ? m : m && m.id;
@@ -766,7 +778,7 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
             id: `${p.id}:${modelId}`,
             label: `${p.label || p.id} — ${modelId}`,
             provider: p.id,
-            configured: Boolean(local.configured),
+            configured: Boolean(local.configured || fromEnv),
           });
         }
       }
@@ -777,27 +789,14 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
         fee,
       };
     }
-    // Custom endpoints: the model id is the *user's* choice — a provider model
-    // name, never a URL. Offering the configured base URL as an `id` meant that
-    // leaving the default selection POSTed `model: "https://api.openai.com/v1"`,
-    // an upstream 400 invalid-model on every call (defect B). There is nothing
-    // to enumerate, so the list stays empty and `needsModelId` tells the
-    // renderer to prompt for a typed id instead. The base URL still travels
-    // along for display only.
-    const cfg = settings.get(cls) || {};
-    const baseURL = typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
-    // Same reporting as customStatus: a stored remote URL is not a usable
-    // model list, and the reason has to reach the UI with it (see customStatus).
-    const blocked = Boolean(baseURL) && !isLocalEndpoint(baseURL);
-    return {
-      class: cls,
-      models: [],
-      needsModelId: true,
-      baseURL,
-      ...(blocked
-        ? { blocked: true, blockedReason: remoteRefusal(baseURL, { subject: `the ${cls} endpoint` }) }
-        : {}),
-    };
+    // Unreachable by construction: CLASSES lists only 'aegis' and 'byok', both
+    // returned above. Thrown rather than falling through to an empty list,
+    // because "no models" is a state the renderer renders as a normal empty
+    // picker — an unknown class would look like a configured-but-empty account
+    // instead of the bug it is. Same shape as dispatch's tail.
+    throw new Error(
+      `listModels: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis' and 'byok' only`
+    );
   }
 
   /**
@@ -961,19 +960,6 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       });
     }
 
-    if (cls === 'ollama') {
-      return ollama.chat({
-        model: opts.model,
-        prompt: opts.prompt,
-        system: opts.system,
-        messages: opts.messages,
-        maxTokens: opts.maxTokens,
-        signal: opts.signal,
-        onDelta: opts.onDelta,
-        ...(opts.tools.length ? { tools: opts.tools, toolChoice: opts.toolChoice } : {}),
-      });
-    }
-
     if (cls === 'byok') {
       // opts.model is still the compound "provider:model" id here — the
       // relay wants them split (a `provider` field plus a bare `model`).
@@ -1021,21 +1007,13 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       }
     }
 
-    const common = {
-      baseURL: opts.cfg.baseURL,
-      apiKey: opts.apiKey,
-      model: opts.model,
-      prompt: opts.prompt,
-      system: opts.system,
-      messages: opts.messages,
-      maxTokens: opts.maxTokens,
-      signal: opts.signal,
-      onDelta: opts.onDelta,
-      ...(opts.tools.length ? { tools: opts.tools, toolChoice: opts.toolChoice } : {}),
-    };
-
-    if (cls === 'anthropic') return providers.anthropicMessages(common);
-    return providers.openaiCompatible(common);
+    // Unreachable by construction: CLASSES lists only 'aegis' and 'byok', both
+    // returned above. Thrown rather than falling through to a default
+    // transport, because a class that silently borrows another's wire format is
+    // this file's recurring failure mode.
+    throw new Error(
+      `dispatch: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis' and 'byok' only`
+    );
   }
 
   async function chat(payload, onDelta) {
@@ -1048,7 +1026,7 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
     // gets no stated budget, which is exactly the "hidden CoT ate the whole
     // default and returned nothing" failure this budget exists to prevent.
     const reasoningModelId = cls === 'byok' ? splitByokModel(model).model : model;
-    const maxTokens = reasoningBudget(cls, reasoningModelId, payload && payload.maxTokens, payload && payload.effort);
+    const maxTokens = reasoningBudget(reasoningModelId, payload && payload.maxTokens, payload && payload.effort);
     // The caller's OWN number, kept apart from `maxTokens` above. That one
     // collapses two different facts into a single value — "the caller stated
     // 4096" and "effort implies 32768" — and the pooled path must treat them
@@ -1104,8 +1082,7 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
     // build a prompt promising tool access the transport silently drops —
     // the model would reason about exec/readFile and never see a result.
     const toolsEnabled = cls !== 'byok' && !(payload && payload.tools === false);
-    const wire = cls === 'anthropic' ? 'anthropic' : 'openai';
-    const toolSchemas = toolsEnabled ? T.toolsFor(wire, { includeSubagent: depth < MAX_SUBAGENT_DEPTH }) : [];
+    const toolSchemas = toolsEnabled ? T.toolsFor({ includeSubagent: depth < MAX_SUBAGENT_DEPTH }) : [];
     const toolChoice = (payload && payload.toolChoice) || null;
 
     const system = (payload && payload.system) || buildSystemPrompt(envFor(payload));
@@ -1135,14 +1112,19 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
       // under the literal class name — one flat 'byok' row could not hold
       // more than one provider's key at a time.
       const byokParts = cls === 'byok' ? splitByokModel(model) : null;
-      const cfg =
-        cls === 'aegis' || cls === 'ollama' ? {}
-        : cls === 'byok' ? settings.get(byokNamespace(byokParts.provider)) || {}
-        : settings.get(cls) || {};
-      const apiKey =
-        cls === 'aegis' || cls === 'ollama' ? null
-        : cls === 'byok' ? settings.rawKey(byokNamespace(byokParts.provider))
-        : settings.rawKey(cls);
+      // aegis carries its own credential on the `aegis` client; byok is the
+      // only class whose key comes out of the settings store, and it comes from
+      // the provider named in the model id.
+      const cfg = cls === 'byok' ? settings.get(byokNamespace(byokParts.provider)) || {} : {};
+      // Where a byok key comes from, in order: the encrypted store (a key saved
+      // through the app), then the shared `~/.aegiscode/.env` (client/env-file.js,
+      // read into process.env at start-up). The store wins when it holds one, so
+      // removing a key there still means removed — the file is the convenience,
+      // not a second authority.
+      const storedKey = cls === 'byok' ? settings.rawKey(byokNamespace(byokParts.provider)) : null;
+      const apiKey = cls !== 'byok'
+        ? null
+        : (storedKey || providerKeyFromEnv(byokParts.provider));
 
       if (cls === 'byok' && (!byokParts.provider || !byokParts.model)) {
         const err = new Error(
@@ -1182,51 +1164,12 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
         throw err;
       }
 
-      // THE DIRECT-DIAL GATE. A custom class talks to the user's base URL
-      // itself (providers.js openaiCompatible / anthropicMessages), and that
-      // transport bills NOBODY: no pooled margin, no BYOK handling fee, no
-      // account key attached. The only usage it may therefore carry is an
-      // endpoint on this machine, where there is no vendor to pay. A remote URL
-      // here is an unpaid turn, and it is refused rather than metered because
-      // there is nothing to meter it against — the relay accepts a fixed
-      // catalog of provider ids (services/nexus_provider/catalog.py), so an
-      // arbitrary remote URL cannot be billed there either.
-      //
-      // Checked at DISPATCH and not only at storage (settings.js set refuses
-      // the same URL): a row written before this rule existed, or hand-edited
-      // into settings.json, is still in the file, and reading it back happily
-      // would keep the lane open. Both seams, one rule — the message is
-      // endpoints.js's, so the desktop and the CLI say the same thing.
-      if (CUSTOM_CLASSES.includes(cls)) {
-        const raw = cfg && typeof cfg.baseURL === 'string' ? cfg.baseURL.trim() : '';
-        if (raw && !isLocalEndpoint(raw)) {
-          const err = new Error(
-            remoteRefusal(raw, {
-              subject: `the ${cls} endpoint`,
-              hint:
-                'This class dials your URL directly and bills nobody, so it is local-only. ' +
-                'Use a model on this machine, or move the provider to the BYOK card (/class byok), ' +
-                'which relays through AEGIS and charges the handling fee.',
-            })
-          );
-          err.status = 400;
-          err.code = 'CUSTOM_ENDPOINT_NOT_LOCAL';
-          throw err;
-        }
-      }
-
-      // Custom classes carry no enumerable model list (see listModels), so a
-      // blank id here means the user never typed one. Fail loudly in-process
-      // instead of shipping `model: undefined` upstream (defect B).
-      if (CUSTOM_CLASSES.includes(cls) && (typeof model !== 'string' || !model.trim())) {
-        const err = new Error(
-          `${cls}: a model id is required — type the provider's model name ` +
-            '(the base URL is not a model).'
-        );
-        err.status = 400;
-        throw err;
-      }
-
+      // No direct-dial gate here any more. It policed classes that talked to a
+      // user-supplied base URL themselves, which billed nobody — no pooled
+      // margin, no BYOK handling fee, no account key attached — so a remote URL
+      // was an unpaid turn to refuse rather than meter. Those classes are gone;
+      // every surviving turn bills either the AEGIS pool (`aegis`) or the
+      // relay's handling fee (`byok`).
       const base = {
         cls, model, mode: payload && payload.mode, maxTokens, statedMaxTokens, autonomous, sessionId, signal, onDelta, cfg, apiKey, toolChoice,
         effort: payload && payload.effort,
@@ -1441,16 +1384,7 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
         // clear it explicitly, being re-dispatches inside round 1).
         const opts = { ...base, system, messages: history, prompt, tools: toolSchemas, recallDeep: base.recallDeep && round === 1 };
         let res;
-        try {
-          res = await dispatch(cls, opts);
-        } catch (e) {
-          // Ollama's OpenAI shim rejects `tools` on older builds. Retrying once
-          // without them keeps local chat working instead of turning an
-          // unadvertised capability into a hard failure.
-          const retriable = cls === 'ollama' && toolSchemas.length && e && (e.status === 400 || /tool/i.test(e.message || ''));
-          if (!retriable) throw e;
-          res = await dispatch(cls, { ...opts, tools: [] });
-        }
+        res = await dispatch(cls, opts);
         addUsage(res);
 
         // A cancelled turn is over. Both recoveries below exist for "the model
@@ -1540,7 +1474,7 @@ function createLocalEngine({ aegis, settings, ollama, providers, tools, promptBu
         foldPromptIntoHistory();
 
         // Thread the assistant turn (its tool_calls) and each result back in
-        // the shapes both wire formats accept (providers.js normalises them).
+        // the OpenAI shape the relay accepts.
         history.push({
           role: 'assistant',
           content: assistantText(res),

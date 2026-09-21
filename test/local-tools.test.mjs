@@ -1,18 +1,26 @@
 #!/usr/bin/env node
 /**
  * Unit tests for the desktop agent loop (client half of aegiscodex-dev's tool
- * calling): desktop/lib/local/tools.js, the message builders in
- * providers.js, the loop in engine.js, and client/aegis.js's buildMessages.
+ * calling): desktop/lib/local/tools.js, the loop in engine.js, the in-process
+ * approval gate, and client/aegis.js's buildMessages.
  *
  * These are the tests that would have caught the three defects this port
  * fixed:
- *   1. providers.openAIMessages/buildAnthropicMessages replaced the whole
- *      message list whenever `prompt` was set — dropping the system prompt and
- *      any tool traffic.
+ *   1. the message builders replaced the whole message list whenever `prompt`
+ *      was set — dropping the system prompt and any tool traffic. (The
+ *      providers.js builders that carried it are gone with the custom-direct
+ *      classes; that behaviour is now exercised end-to-end by the loop tests
+ *      below rather than by a builder unit test.)
  *   2. client/aegis.js buildMessages returned a non-empty history verbatim,
  *      dropping `system` on the Aegis transport alone.
  *   3. engine.chat sent no system prompt and no tools, so no model could ever
  *      touch the machine or know which machine it was on.
+ *
+ * The tool-loop coverage below runs on the SHIPPING 'aegis' class (the pooled
+ * Cloud lane). The gate it reaches — engine.js gatedExecuteTool — is
+ * class-independent, so re-pointing the loop off the removed 'openai-compat'
+ * class onto 'aegis' preserves it exactly; one block below raises a real
+ * approval card to prove it.
  */
 
 import { createRequire } from 'node:module';
@@ -23,7 +31,6 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const tools = require('../desktop/lib/local/tools.js');
 const prompt = require('../desktop/lib/local/prompt.js');
-const providers = require('../desktop/lib/local/providers.js');
 const { createLocalEngine, extractToolCalls } = require('../desktop/lib/local/engine.js');
 const { ShellSession } = require('../desktop/lib/local/shell.js');
 const { createClient } = require('../client/aegis.js');
@@ -44,27 +51,13 @@ const file = path.join(tmp, 'nested', 'hello.txt');
 // ── 1. Schemas ──────────────────────────────────────────────────────────────
 console.log('tools.js — schemas');
 
-const openai = tools.toolsFor('openai');
-const anthropicSchemas = tools.toolsFor('anthropic');
+const openai = tools.toolsFor();
 const names = tools.toolNames();
 assert(names.join(',') === 'readFile,writeFile,editFile,listDir,glob,grep,exec,task', `tool names: ${names.join(',')}`);
 assert(openai.length === 8, `openai advertises 8 tools, got ${openai.length}`);
 assert(
   openai.every((t) => t.type === 'function' && t.function && t.function.parameters.type === 'object'),
-  'openai tools carry {type:function, function:{parameters}}'
-);
-assert(
-  anthropicSchemas.every((t) => t.name && t.input_schema && t.input_schema.type === 'object'),
-  'anthropic tools carry {name, input_schema}'
-);
-assert(!('type' in anthropicSchemas[0]) && !('function' in anthropicSchemas[0]), 'anthropic tools are not OpenAI-shaped');
-assert(
-  JSON.stringify(tools.openaiToAnthropicTools(openai)) === JSON.stringify(anthropicSchemas),
-  'openaiToAnthropicTools is the exact projection (no schema drift)'
-);
-assert(
-  JSON.stringify(tools.anthropicToOpenaiTools(anthropicSchemas)) === JSON.stringify(openai),
-  'anthropicToOpenaiTools round-trips'
+  'tools carry {type:function, function:{parameters}}'
 );
 
 // ── 2. Executors ────────────────────────────────────────────────────────────
@@ -132,62 +125,29 @@ console.log('shell.js — persistent session');
   assert(noCtx.ok, 'exec with no ctx.getShell still works (one-shot fallback)');
 }
 
-// ── 3. Message builders (defect 1) ──────────────────────────────────────────
-console.log('providers.js — message builders');
-
-const keepSystem = providers.openAIMessages([{ role: 'user', content: 'hi' }], 'sys', null);
-assert(keepSystem[0].role === 'system' && keepSystem[0].content === 'sys', 'OpenAI system first');
-
-const both = providers.openAIMessages([{ role: 'user', content: 'first' }], 'sys', 'second');
-assert(
-  both.length === 3 && both[1].content === 'first' && both[2].content === 'second',
-  'OpenAI keeps history AND appends the prompt (the regression)'
-);
-assert(both[0].role === 'system', 'OpenAI keeps the system turn when a prompt is given (the regression)');
-
-const dedup = providers.openAIMessages([{ role: 'user', content: 'same' }], null, 'same');
-assert(dedup.length === 1, 'an identical trailing prompt is not duplicated');
-
-const anthropic = providers.buildAnthropicMessages([{ role: 'user', content: 'first' }], 'second');
-assert(
-  anthropic.length === 2 && anthropic[1].content === 'second',
-  'Anthropic keeps history AND appends the prompt (the regression)'
-);
-assert(
-  !anthropic.some((m) => m.role === 'system'),
-  'Anthropic never carries a system turn (it is a top-level field)'
-);
-
-const toolThread = providers.normalizeMessages([
-  { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'readFile', arguments: '{}' } }] },
-  { role: 'tool', tool_call_id: 'c1', content: 'result' },
-]);
-assert(
-  toolThread[0].tool_calls && toolThread[1].tool_call_id === 'c1' && toolThread[1].role === 'tool',
-  'tool_calls and tool_call_id survive normalisation verbatim'
-);
-
 // ── 4. The loop (defect 3) ──────────────────────────────────────────────────
 console.log('engine.js — agent loop');
 
+/**
+ * Drive the agent loop on the SHIPPING 'aegis' class. The pooled transport is
+ * a script: every call records the args it was handed and returns the next
+ * scripted completion. (The old harness also faked providers.openaiCompatible
+ * — that module and the 'openai-compat' class it served are deleted; the loop,
+ * the tool schemas and the approval gate are all class-independent, so the
+ * pooled lane exercises exactly the same code paths.)
+ */
 function fakeEngine(script) {
   const seen = [];
   let i = 0;
-  const providersFake = {
-    async openaiCompatible(args) {
-      seen.push(args);
-      return script[Math.min(i++, script.length - 1)];
-    },
-    async anthropicMessages(args) {
-      seen.push(args);
-      return script[Math.min(i++, script.length - 1)];
-    },
-  };
+  const next = () => script[Math.min(i++, script.length - 1)];
   const engine = createLocalEngine({
-    aegis: { apiKey: 'k', async listModels() { return { models: [] }; }, async chatCompletion(args) { seen.push(args); return script[Math.min(i++, script.length - 1)]; } },
+    aegis: {
+      apiKey: 'k',
+      async listModels() { return { models: [] }; },
+      async chatCompletion(args) { seen.push(args); return next(); },
+    },
     settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
-    ollama: { async probe() { return { running: true }; }, async listTags() { return []; }, async chat(args) { seen.push(args); return script[Math.min(i++, script.length - 1)]; } },
-    providers: providersFake,
+    getConfirmMode: () => false,
   });
   return { engine, seen };
 }
@@ -205,12 +165,15 @@ const final = { model: 'm', choices: [{ message: { content: 'done reading' } }] 
 {
   const { engine, seen } = fakeEngine([callOnce, final]);
   const res = await engine.chat(
-    { class: 'openai-compat', prompt: 'read it', model: 'gpt-x' },
+    { class: 'aegis', prompt: 'read it', model: 'gpt-x' },
     () => {}
   );
   assert(res.choices[0].message.content === 'done reading', 'the loop returns the final text answer');
   assert(seen.length === 2, `the loop made 2 rounds, got ${seen.length}`);
-  assert(Array.isArray(seen[0].tools) && seen[0].tools.length === 8, 'round 1 advertised the 8 tool schemas');
+  // The pooled transport carries the schemas under `extra` (the client hoists
+  // them into the request body); the removed direct classes passed `tools`
+  // top-level. Same 8 schemas, same loop.
+  assert(Array.isArray(seen[0].extra.tools) && seen[0].extra.tools.length === 8, 'round 1 advertised the 8 tool schemas');
   assert(
     typeof seen[0].system === 'string' && seen[0].system.includes('Aegiscodex') && seen[0].system.includes('# Environment'),
     'round 1 carried the persona + environment preamble (no more "which OS are you on?")'
@@ -234,75 +197,106 @@ const final = { model: 'm', choices: [{ message: { content: 'done reading' } }] 
 {
   // No round cap: a model that keeps calling tools past the old 12-round
   // limit is never cut off — the loop runs as long as it keeps calling
-  // tools and only stops once it answers in text.
-  const { engine } = fakeEngine([callOnce]);
+  // tools and only stops once it answers in text. (The real horizon is 24
+  // rounds for a chat turn, so 20 tool rounds still lands before it.)
   const forever = { ...callOnce, toolCalls: [{ id: 'x', name: 'listDir', args: { path: tmp } }] };
   const oldCap = 12;
   const toolRounds = oldCap + 8;
   let rounds = 0;
-  const e = createLocalEngine({
-    aegis: { apiKey: 'k', async listModels() { return { models: [] }; }, async chatCompletion() { return {}; } },
-    settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; }, async chat() { return {}; } },
-    providers: {
-      async openaiCompatible() {
-        rounds++;
+  const engine = createLocalEngine({
+    aegis: {
+      apiKey: 'k',
+      async listModels() { return { models: [] }; },
+      async chatCompletion() {
+        rounds += 1;
         return rounds <= toolRounds ? forever : final;
       },
-      async anthropicMessages() { return {}; },
     },
+    settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
+    getConfirmMode: () => false,
   });
-  const res = await e.chat({ class: 'openai-compat', prompt: 'go', model: 'm' }, () => {});
+  const res = await engine.chat({ class: 'aegis', prompt: 'go', model: 'm' }, () => {});
   assert(rounds === toolRounds + 1, `ran past the old ${oldCap}-round cap (${rounds} rounds)`);
   assert(
     res && res.choices[0].message.content === 'done reading',
     'the loop keeps going until the model actually answers in text'
   );
-  void engine;
 }
 
 {
   const { engine, seen } = fakeEngine([final]);
-  await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'm', tools: false }, () => {});
-  assert(seen[0].tools === undefined, '`tools: false` restores the single-shot turn (no schemas)');
+  await engine.chat({ class: 'aegis', prompt: 'hi', model: 'm', tools: false }, () => {});
+  assert(
+    !('tools' in seen[0].extra),
+    '`tools: false` restores the single-shot turn (no schemas on the wire)'
+  );
   assert(typeof seen[0].system === 'string' && seen[0].system.length > 0, 'the persona is sent even with tools off');
 }
 
 {
-  // Anthropic class must be handed Anthropic-shaped schemas, not OpenAI's.
-  const { engine, seen } = fakeEngine([callOnce, final]);
-  await engine.chat({ class: 'anthropic', prompt: 'read', model: 'claude-x' }, () => {});
-  assert(
-    seen[0].tools.every((t) => t.input_schema && !t.function),
-    'the anthropic transport is handed {name, input_schema} schemas only'
-  );
+  // The removed custom classes no longer exist: dispatching one is refused
+  // outright rather than silently borrowing another class's transport.
+  const { engine } = fakeEngine([final]);
+  let err = null;
+  try {
+    await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'm' }, () => {});
+  } catch (e) {
+    err = e;
+  }
+  assert(err && /unknown model class/.test(err.message), `a removed class is refused: ${err && err.message}`);
 }
 
 {
-  // An old Ollama that 400s on `tools` must not break local chat.
+  // The in-process approval gate (engine.js gatedExecuteTool) is
+  // class-independent: an exec call on the aegis lane still raises the same
+  // card the removed direct classes did, and a denial is fed back as a tool
+  // error instead of running the command.
+  const execCall = {
+    model: 'm',
+    choices: [{ message: { content: '' } }],
+    toolCalls: [{ id: 'c_gate', name: 'exec', args: { command: 'echo SHOULD-NOT-RUN' } }],
+  };
   const seen = [];
-  let n = 0;
-  const e = createLocalEngine({
-    aegis: { apiKey: '', async listModels() { return { models: [] }; }, async chatCompletion() { return {}; } },
-    settings: { get: () => ({}), rawKey: () => '' },
-    ollama: {
-      async probe() { return { running: true }; },
-      async listTags() { return []; },
-      async chat(args) {
-        seen.push(args);
-        if (args.tools && args.tools.length) {
-          const err = new Error('upstream 400: unknown field tools');
-          err.status = 400;
-          throw err;
-        }
-        return { model: args.model, choices: [{ message: { content: 'local ok' } }], n: n++ };
-      },
+  let i = 0;
+  const script = [execCall, final];
+  const engine = createLocalEngine({
+    aegis: {
+      apiKey: 'k',
+      async listModels() { return { models: [] }; },
+      async chatCompletion(args) { seen.push(args); return script[Math.min(i++, script.length - 1)]; },
     },
-    providers: { async openaiCompatible() { return {}; }, async anthropicMessages() { return {}; } },
+    settings: { get: () => ({}), rawKey: () => '' },
+    // No getConfirmMode/settings.getConfirmMode → the gate defaults ON.
   });
-  const res = await e.chat({ class: 'ollama', prompt: 'hi', model: 'llama3' }, () => {});
-  assert(seen.length === 2 && seen[0].tools.length === 8 && !seen[1].tools, 'a tool-rejecting Ollama is retried without tools');
-  assert(res.choices[0].message.content === 'local ok', 'the Ollama retry returns the answer');
+
+  const sessionId = 'gate-session';
+  let card = null;
+  const turn = engine.chat({ class: 'aegis', prompt: 'please echo', model: 'm', sessionId }, (c) => {
+    if (c && c.approval) card = c;
+  });
+  for (let n = 0; n < 400 && !card; n++) await new Promise((r) => setTimeout(r, 5));
+  assert(card && card.approval, 'the aegis lane raises the in-process approval card for a mutating tool');
+  if (card && card.approval) {
+    const answered = engine.respondApproval(card.approval.id, 'deny');
+    assert(answered && answered.ok, 'the approval card is answerable by id');
+  }
+
+  // A denied turn must still resolve (the denial is handed back to the model,
+  // which then answers in text) rather than hanging on the gate.
+  let guard;
+  const timeout = new Promise((resolve) => {
+    guard = setTimeout(() => { engine.cancel(sessionId); resolve(null); }, 3000);
+  });
+  let res = null;
+  let runErr = null;
+  try { res = await Promise.race([turn, timeout]); } catch (e) { runErr = e; }
+  clearTimeout(guard);
+  assert(!runErr, `the denied turn resolves: ${runErr && runErr.message}`);
+  if (res) {
+    assert(res.choices[0].message.content === 'done reading', 'the turn continues after a denial');
+    const toolResult = seen[1] && seen[1].messages.find((m) => m.role === 'tool');
+    assert(toolResult && /denied/.test(toolResult.content), `the denial is fed back as the tool result: ${JSON.stringify(toolResult)}`);
+  }
 }
 
 {
@@ -328,7 +322,7 @@ console.log('engine.js — task subagent');
   const topFinal = { model: 'm', choices: [{ message: { content: 'done — subagent reports no secrets found' } }] };
 
   const { engine, seen } = fakeEngine([taskCall, subagentFinal, topFinal]);
-  const res = await engine.chat({ class: 'openai-compat', prompt: 'audit this repo', model: 'gpt-x' }, () => {});
+  const res = await engine.chat({ class: 'aegis', prompt: 'audit this repo', model: 'gpt-x' }, () => {});
   assert(res.choices[0].message.content === 'done — subagent reports no secrets found', 'the top-level turn answers after the subagent returns');
   assert(seen.length === 3, `task delegation made 3 rounds (top, subagent, top again), got ${seen.length}`);
   assert(seen[1].system.includes('Vulnerability Scanner') || seen[1].system.includes('Security Vulnerability Scanner'), `the subagent got the scanner preset system prompt: ${seen[1].system.slice(0, 80)}`);
@@ -342,8 +336,11 @@ console.log('engine.js — task subagent');
   // further), but a depth-4 subagent must not — the schema drops it.
   const deep = { model: 'm', choices: [{ message: { content: 'leaf answer' } }] };
   const { engine, seen } = fakeEngine([deep]);
-  await engine.chat({ class: 'openai-compat', prompt: 'x', model: 'm', depth: 4 }, () => {});
-  assert(!seen[0].tools.some((t) => t.function.name === 'task'), 'a depth-4 turn is not offered the task tool (subagent depth cap)');
+  await engine.chat({ class: 'aegis', prompt: 'x', model: 'm', depth: 4 }, () => {});
+  assert(
+    !seen[0].extra.tools.some((t) => t.function.name === 'task'),
+    'a depth-4 turn is not offered the task tool (subagent depth cap)'
+  );
 }
 
 {
@@ -353,7 +350,7 @@ console.log('engine.js — task subagent');
     { model: 'm', choices: [{ message: { content: 'handled the empty task' } }] },
   ];
   const { engine, seen } = fakeEngine(script);
-  const res = await engine.chat({ class: 'openai-compat', prompt: 'go', model: 'm' }, () => {});
+  const res = await engine.chat({ class: 'aegis', prompt: 'go', model: 'm' }, () => {});
   assert(res.choices[0].message.content === 'handled the empty task', 'an empty task call resolves as a tool error, not a crash');
   assert(seen.length === 2, 'an empty task never spawns a nested chat() round');
 }
@@ -428,4 +425,4 @@ if (failures) {
   console.error(`\nlocal-tools test FAILED: ${failures} assertion(s)`);
   process.exit(1);
 }
-console.log('\nLocal tool-calling test passed: schemas, executors, message builders, agent loop, no round cap.');
+console.log('\nLocal tool-calling test passed: schemas, executors, agent loop, approval gate, no round cap.');

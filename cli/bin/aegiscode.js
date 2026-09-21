@@ -376,6 +376,24 @@ async function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
+  // ── the shared env file, before any credential is resolved ───────────────
+  //
+  // `~/.aegiscode/.env` read into process.env once. This is what makes key
+  // setup ONE instruction in every host — "put it in ~/.aegiscode/.env" —
+  // instead of a `login` plus a `/byok-key <provider>` prompt per provider:
+  // both resolution paths already read AEGIS_API_KEY and <PROVIDER>_API_KEY
+  // out of the environment (src/credentials.js, the byok class in the shared
+  // engine), they simply had nothing filling it. A variable already exported
+  // in the launching shell always wins. Placed AFTER the help/version
+  // early-exits so those stay instant, and before caps because everything
+  // below this point may resolve a credential.
+  try {
+    const { resolveClientModule } = require('../src/shared.js');
+    require(resolveClientModule('env-file.js')).loadEnvFile();
+  } catch (e) {
+    process.stderr.write(`aegiscode: could not read ~/.aegiscode/.env: ${e && e.message}\n`);
+  }
+
   // ── terminal capabilities, resolved before anything else is loaded ────────
   //
   // Ordering is the whole point. `theme.js` materialises its palettes and its

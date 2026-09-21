@@ -189,8 +189,6 @@ try {
   const engine = createLocalEngine({
     aegis,
     settings: { get: () => ({}), rawKey: () => null },
-    ollama: { async probe() {}, async listTags() { return []; } },
-    providers: {},
     tools: { toolsFor: () => [], run: async () => ({}) },
   });
 
@@ -234,8 +232,6 @@ try {
   const engine2 = createLocalEngine({
     aegis: aegis2,
     settings: { get: () => ({}), rawKey: () => null },
-    ollama: { async probe() {}, async listTags() { return []; } },
-    providers: {},
     tools: { toolsFor: () => [], run: async () => ({}) },
   });
   await engine2.chat({ class: 'aegis', prompt: 'hi', model: 'm1', autonomous: true }, (c) => chunks.push(c));

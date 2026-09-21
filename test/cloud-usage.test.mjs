@@ -207,12 +207,9 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const liveClient = createClient({ apiKey: 'test-key', apiBase: base });
-    const noop = async () => ({});
     const liveEngine = createLocalEngine({
       aegis: liveClient,
       settings: { get: () => ({}), rawKey: () => null },
-      ollama: noop,
-      providers: { openaiCompatible: noop, anthropicMessages: noop },
     });
     const turn = await liveEngine.chat(
       { class: 'aegis', prompt: 'hi', model: 'nexus-brain', tools: false },

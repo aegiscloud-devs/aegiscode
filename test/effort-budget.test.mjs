@@ -103,7 +103,7 @@ assert(
 
 // ── 3. send() states the budget it derived, and no cap of its own ──────────
 assert(
-  /const maxTokens = budgetFor\(cls, model, undefined, effort\)/.test(app),
+  /const maxTokens = budgetFor\(model, undefined, effort\)/.test(app),
   'send() derives the budget from the rung through budgetFor()'
 );
 assert(

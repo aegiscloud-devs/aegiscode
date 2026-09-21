@@ -66,7 +66,6 @@ function harness(replies) {
   const engine = createLocalEngine({
     aegis,
     settings: { get: () => ({}), rawKey: () => null },
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; } },
     getConfirmMode: () => false,
   });
   return { engine, calls };
@@ -155,26 +154,24 @@ function harness(replies) {
   assert(Array.isArray(calls[1].extra.tools) === false, 'the write-up pass offers no tools (unchanged)');
 }
 
-// (e) The opt-out is aegis-only: the other classes must never receive a
-// `brain` field (it is a pool concept, and the custom classes reject unknown
-// bodies inconsistently).
+// (e) `brain` is a pool concept and rides only on the pooled 'aegis' class:
+// a plain turn carries no `brain` key at all (b), and a continuation opts out
+// explicitly (c/d). The old negative control here was a custom direct class
+// ('openai-compat'), which this build no longer ships — a REMOVED class is now
+// refused outright instead of being dispatched at all.
 {
-  const calls = [];
-  const engine = createLocalEngine({
-    aegis: { apiKey: 'k', async listModels() { return { models: [] }; }, async chatCompletion() { return {}; } },
-    settings: { get: () => ({ baseURL: 'http://local', configured: true }), rawKey: () => 'k' },
-    ollama: { async probe() { return { running: false }; }, async listTags() { return []; } },
-    providers: {
-      openaiCompatible: async (a) => {
-        calls.push(a);
-        return { model: a.model, choices: [{ message: { content: 'ok' } }] };
-      },
-      anthropicMessages: async () => ({ choices: [{ message: { content: 'ok' } }] }),
-    },
-    getConfirmMode: () => false,
-  });
-  await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'm', tools: false }, () => {});
-  assert(calls.length === 1, 'the custom class dispatched once');
+  const { engine, calls } = harness([{ text: 'done' }]);
+  await engine.chat({ class: 'aegis', prompt: 'hi', model: 'nexus-brain', tools: false }, () => {});
+  assert(calls.length === 1, 'the pooled class dispatched once');
+  assert(!('brain' in calls[0].extra), 'a single-shot pooled turn carries no brain flag');
+
+  let err = null;
+  try {
+    await engine.chat({ class: 'openai-compat', prompt: 'hi', model: 'm', tools: false }, () => {});
+  } catch (e) {
+    err = e;
+  }
+  assert(err && /unknown model class/.test(err.message), `a removed class is refused: ${err && err.message}`);
 }
 
 // ── 2. Client: the stalled-stream budget follows the response ───────────────

@@ -47,6 +47,26 @@ try {
   credentials = require('./vendor/credentials.js');
 }
 
+// The shared `~/.aegiscode/.env` loader (client/env-file.js, staged to
+// ./vendor/env-file.js when packaged). It is what makes the key instruction the
+// same in every host — "put it in ~/.aegiscode/.env" — because AEGIS_API_KEY is
+// already the first entry in the credential resolution order above and a BYOK
+// provider's key is read from the matching <PROVIDER>_API_KEY (see
+// lib/local/engine.js). Deliberately NOT called at module load: seven test
+// files require this file, and a top-level call would let the developer's own
+// env file reach a test that asserts no key is configured. bootstrap() below —
+// the real app entry — calls it instead.
+let envFile = null;
+try {
+  envFile = require('../client/env-file.js');
+} catch {
+  try {
+    envFile = require('./vendor/env-file.js');
+  } catch {
+    /* neither present: the environment is the only source, as before */
+  }
+}
+
 let electron = null;
 try {
   // In plain Node (CI smoke test, `node --check`) this either throws
@@ -62,8 +82,6 @@ try {
 const os = require('node:os');
 const { createLocalEngine } = require('./lib/local/engine.js');
 const { createSettingsStore, isReservedNamespace } = require('./lib/settings.js');
-const ollama = require('./lib/local/ollama.js');
-const providers = require('./lib/local/providers.js');
 const sessionStore = require('./lib/sync/sessions.js');
 const memoryQueue = require('./lib/sync/memory-queue.js');
 const persistGate = require('./lib/sync/persist-gate.js');
@@ -807,8 +825,10 @@ function resolveUserDataDir(app) {
 }
 
 /**
- * Wire the real LocalEngine registry: settings store + ollama/providers
- * transports + the shared cloud client. Transport-only — no brain logic.
+ * Wire the real LocalEngine registry: the settings store + the shared cloud
+ * client. Transport-only — no brain logic. Both shipping classes (aegis, byok)
+ * reach their provider through that one client, so there is no second
+ * transport to inject.
  */
 function createEngine(aegis, { app, safeStorage, dir: dirOverride, sessionsDir: sessionsOverride } = {}) {
   // Settings (the safeStorage-encrypted key, window state, provider entries)
@@ -819,7 +839,7 @@ function createEngine(aegis, { app, safeStorage, dir: dirOverride, sessionsDir: 
   // Relocate a pre-fix `settings['aegis']` key into the reserved namespace so
   // it stops showing up as a provider. Ciphertext-level, so safe pre-'ready'.
   settings.migrateLegacyAegisKey();
-  const engine = createLocalEngine({ aegis, settings, ollama, providers });
+  const engine = createLocalEngine({ aegis, settings });
   // Sessions/memory live in the SHARED data dir ($AEGISCODE_HOME or
   // ~/.aegiscode) — the same file the terminal host and the MCP plugin read —
   // so a thread started in either shows up in the other without cloud sync and
@@ -1330,8 +1350,6 @@ function createQueueEngine(aegis, settings) {
   return createLocalEngine({
     aegis,
     settings,
-    ollama,
-    providers,
     getConfirmMode: () => false,
   });
 }
@@ -2248,6 +2266,25 @@ function bootstrap() {
   }
 
   app.setName('AEGIS Desktop');
+
+  // Read ~/.aegiscode/.env into process.env once, before anything resolves a
+  // key (resolveStartupKey() later in this function, and every BYOK provider
+  // key in lib/local/engine.js). A variable already exported in the launching
+  // shell always wins — see loadEnvFile()'s contract. Failure is never fatal:
+  // an absent file is the pre-existing state, not an error.
+  if (envFile && typeof envFile.loadEnvFile === 'function') {
+    try {
+      const envResult = envFile.loadEnvFile();
+      if (envResult.loose) {
+        console.warn(
+          `aegis: ${envResult.file} is readable by other accounts ` +
+            `(mode ${envResult.mode.toString(8)}) — consider \`chmod 600\` on it.`
+        );
+      }
+    } catch (e) {
+      console.warn(`aegis: could not read ${envFile.envFileFor()}: ${e && e.message}`);
+    }
+  }
 
   // Register the aegis:// scheme so the OS routes those links to this app.
   // Safe to call unconditionally (idempotent) and before 'ready'.

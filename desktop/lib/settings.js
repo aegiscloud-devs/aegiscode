@@ -17,12 +17,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-// The direct-dial policy (see that file): which rows may hold a remote base URL.
-// Enforced HERE, at the storage seam, so the unusable configuration cannot be
-// created by either host — the desktop's Settings pane or the CLI's `/model add`
-// — rather than only being refused at send time. Pure node builtins, so this
-// store stays loadable without Electron.
-const { isLocalEndpoint, remoteRefusal, isDirectDialRow } = require('./local/endpoints.js');
 
 const SETTINGS_FILE = 'settings.json';
 
@@ -163,35 +157,18 @@ function createSettingsStore({ dir, safeStorage } = {}) {
   /**
    * Write a provider row.
    *
-   * A direct-dial row ('openai-compat', 'anthropic', 'custom:*') may not hold a
-   * remote base URL: those classes talk to the URL themselves (providers.js),
-   * which bills nobody, so the only usage they may carry is an endpoint on this
-   * machine. Refusing at STORAGE — the earliest seam, shared by the desktop's
-   * Settings pane and the CLI — means a remote custom endpoint cannot be
-   * configured into existence in the first place; the engine's dispatch gate
-   * then covers the rows that predate this rule or were hand-edited into the
-   * file. Empty is allowed (that is how the row is cleared, and how a
-   * not-yet-configured row looks), and every other namespace is untouched:
-   * `byok:<provider>` rows are remote by definition and reach their provider
-   * through AEGIS's relay, which is what bills them.
+   * There is no endpoint policy at this seam any more. That guard existed for
+   * the direct-dial classes ('openai-compat', 'anthropic', 'custom:*'), which
+   * talked to a base URL themselves and so could be pointed at a remote host
+   * that bills nobody (see the removed `local/endpoints.js`). Those classes are
+   * gone: the surviving rows are `byok:<provider>`, which are remote by
+   * definition and reach their provider through AEGIS's relay — that relay is
+   * what bills the turn, so a remote base URL is no longer a misconfiguration
+   * to refuse. `baseURL` stays in the record shape for back-compat with rows
+   * already on disk.
    */
   function set(provider, { baseURL, key } = {}) {
     assertNotReserved(provider);
-    if (baseURL !== undefined && isDirectDialRow(provider)) {
-      const next = String(baseURL == null ? '' : baseURL).trim();
-      if (next && !isLocalEndpoint(next)) {
-        const err = new Error(remoteRefusal(next, {
-          subject: `the ${provider} endpoint`,
-          hint:
-            'This lane is for a model running on this machine. To use a remote provider, ' +
-            'save it under Bring-your-own-key (the CLI\'s /class byok), where the AEGIS handling ' +
-            'fee bills the turn.',
-        }));
-        err.status = 400;
-        err.code = 'CUSTOM_ENDPOINT_NOT_LOCAL';
-        throw err;
-      }
-    }
     const data = load();
     const cfg = data[provider] || {};
     if (baseURL !== undefined) cfg.baseURL = baseURL;

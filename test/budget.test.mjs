@@ -20,6 +20,10 @@
  * main process sends, and the last word) — so the two are compared HERE, case
  * by case and literal by literal. A copy that drifts is exactly how aegis1's
  * ladder came to disagree with this side once before (974adc5).
+ *
+ * Neither takes a model CLASS any more: with the direct-dial classes gone, the
+ * class no longer selects anything, and a parameter that selects nothing is how
+ * the next class-dependent rule gets added to one copy and not the other.
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -39,7 +43,6 @@ const {
   FLAT_CEILING,
   EFFORT_TOKEN_BUDGET,
   DEEPSEEK_REASONING_MODEL_RE,
-  REQUIRES_STATED_BUDGET,
 } = renderer;
 
 function assert(cond, msg) {
@@ -85,65 +88,55 @@ assert(
 // ── 3. budgetFor: exactly one authority per call ───────────────────────────
 // A number the caller STATED is the budget, verbatim: a deliberate cap is a
 // liability ceiling and no rung may raise it.
-assert(budgetFor('anthropic', 'claude-sonnet-5', 4096, 'high') === 4096, 'a stated cap is returned verbatim');
-assert(budgetFor('aegis', 'pooled-x', 1, 'high') === 1, 'even a tiny stated cap is honoured, never raised');
-assert(
-  budgetFor('openai-compat', 'deepseek-flash', '2048', 'low') === 2048,
-  'a numeric string counts as stated'
-);
-// Nonsense is "nothing stated", never a 0/NaN-token ceiling.
-assert(budgetFor('openai-compat', 'gpt-4o-mini', 0, 'high') === undefined, '0 means unstated');
-assert(budgetFor('openai-compat', 'gpt-4o-mini', -1, 'high') === undefined, 'a negative means unstated');
-assert(budgetFor('openai-compat', 'gpt-4o-mini', NaN, 'high') === undefined, 'NaN means unstated');
+assert(budgetFor('claude-sonnet-5', 4096, 'high') === 4096, 'a stated cap is returned verbatim');
+assert(budgetFor('pooled-x', 1, 'high') === 1, 'even a tiny stated cap is honoured, never raised');
+assert(budgetFor('deepseek-flash', '2048', 'low') === 2048, 'a numeric string counts as stated');
 
-// A model that reasons against its own output budget gets the rung.
+// Nonsense is "nothing stated", never a 0/NaN-token ceiling.
+assert(budgetFor('gpt-4o-mini', 0, 'high') === undefined, '0 means unstated');
+assert(budgetFor('gpt-4o-mini', -1, 'high') === undefined, 'a negative means unstated');
+assert(budgetFor('gpt-4o-mini', NaN, 'high') === undefined, 'NaN means unstated');
+
+// A model that reasons against its own output budget gets the rung — on every
+// class, because the rule is a property of the MODEL, not of the transport.
 for (const id of ['deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-pro', 'deepseek-reasoner']) {
   assert(
-    budgetFor('anthropic', id, undefined, 'low') === EFFORT_TOKEN_BUDGET.low,
+    budgetFor(id, undefined, 'low') === EFFORT_TOKEN_BUDGET.low,
     `${id} is sized by the rung, not by the transport's default`
   );
 }
-// A class whose wire format REQUIRES the field gets the rung too — Anthropic's
-// Messages API 400s without max_tokens, so a number must travel.
-for (const id of ['claude-sonnet-5', 'claude-haiku-4-5']) {
-  assert(
-    budgetFor('anthropic', id, undefined, 'medium') === EFFORT_TOKEN_BUDGET.medium,
-    `${id} on the anthropic class is sized by the rung`
-  );
-}
-assert(REQUIRES_STATED_BUDGET.has('anthropic'), 'anthropic is the class that requires the field');
 
 // Everything else states NOTHING. This is the fix, not a shortcut: the
 // transport used to fill this gap with an invented 4096, which a reasoning
 // model spent entirely on hidden chain-of-thought.
-assert(budgetFor('openai-compat', 'gpt-4o-mini', undefined, 'high') === undefined, 'a plain OpenAI-compatible id sends no cap');
-assert(budgetFor('ollama', 'llama3', undefined, 'high') === undefined, 'a local model sends no cap');
-assert(budgetFor('aegis', 'pooled-x', undefined, 'high') === undefined, 'the pooled class sends no cap — aegis1 sizes it');
-assert(budgetFor('openai-compat', 'deepseek-chat', undefined, 'high') === undefined, 'a non-reasoning DeepSeek id sends no cap');
+assert(budgetFor('gpt-4o-mini', undefined, 'high') === undefined, 'a plain OpenAI-compatible id sends no cap');
+assert(budgetFor('claude-haiku-4-5', undefined, 'medium') === undefined, 'a Claude id sends no cap — the direct-dial class that required the field is gone');
+assert(budgetFor('pooled-x', undefined, 'high') === undefined, 'the pooled class sends no cap — aegis1 sizes it');
+assert(budgetFor('deepseek-chat', undefined, 'high') === undefined, 'a non-reasoning DeepSeek id sends no cap');
 
 // ── 4. The two copies answer identically ───────────────────────────────────
 const CASES = [
-  ['openai-compat', 'gpt-4o-mini', undefined, undefined],
-  ['openai-compat', 'gpt-4o-mini', 4096, 'low'],
-  ['openai-compat', 'deepseek-chat', undefined, 'high'],
-  ['openai-compat', 'deepseek-flash', undefined, 'low'],
-  ['openai-compat', 'deepseek-flash', undefined, 'medium'],
-  ['openai-compat', 'deepseek-flash', undefined, 'auto'],
-  ['openai-compat', 'deepseek-reasoner', undefined, 'high'],
-  ['openai-compat', 'deepseek-v4.1-flash', '8192', 'low'],
-  ['anthropic', 'claude-sonnet-5', undefined, 'auto'],
-  ['anthropic', 'deepseek-flash', undefined, 'medium'],
-  ['anthropic', 'deepseek-v4-pro', 1024, 'high'],
-  ['ollama', 'llama3', undefined, 'high'],
-  ['aegis', 'pooled-model', undefined, 'high'],
-  ['aegis', 'pooled-model', 65536, 'low'],
+  ['gpt-4o-mini', undefined, undefined],
+  ['gpt-4o-mini', 4096, 'low'],
+  ['deepseek-chat', undefined, 'high'],
+  ['deepseek-flash', undefined, 'low'],
+  ['deepseek-flash', undefined, 'medium'],
+  ['deepseek-flash', undefined, 'auto'],
+  ['deepseek-reasoner', undefined, 'high'],
+  ['deepseek-v4.1-flash', '8192', 'low'],
+  ['claude-sonnet-5', undefined, 'auto'],
+  ['deepseek-flash', undefined, 'medium'],
+  ['deepseek-v4-pro', 1024, 'high'],
+  ['llama3', undefined, 'high'],
+  ['pooled-model', undefined, 'high'],
+  ['pooled-model', 65536, 'low'],
 ];
-for (const [cls, model, stated, effort] of CASES) {
-  const a = budgetFor(cls, model, stated, effort);
-  const b = engine.reasoningBudget(cls, model, stated, effort);
+for (const [model, stated, effort] of CASES) {
+  const a = budgetFor(model, stated, effort);
+  const b = engine.reasoningBudget(model, stated, effort);
   assert(
     a === b,
-    `renderer/engine disagree on ${cls}/${model} stated=${stated} effort=${effort}: ${a} vs ${b}`
+    `renderer/engine disagree on ${model} stated=${stated} effort=${effort}: ${a} vs ${b}`
   );
 }
 
@@ -164,33 +157,25 @@ const tableOf = (src) => {
 assert(tableOf(budgetSrc) && tableOf(budgetSrc) === tableOf(engineSrc), 'EFFORT_TOKEN_BUDGET is one table in both files');
 
 // ── 5. No transport invents a cap ──────────────────────────────────────────
-const providers = readFileSync(join(root, 'desktop', 'lib', 'local', 'providers.js'), 'utf8');
-const ollama = readFileSync(join(root, 'desktop', 'lib', 'local', 'ollama.js'), 'utf8');
+// This half used to read desktop/lib/local/providers.js and ollama.js — the two
+// direct-dial transports, both deleted with the classes they served. The rule
+// they had to obey is not lost, it moved with the surviving transport: the Aegis
+// client is the only one left that can put a max_tokens on the wire, so it is
+// the only file that can still invent one.
+const aegisSrc = readFileSync(join(root, 'client', 'aegis.js'), 'utf8');
 assert(
-  /if \(Number\(maxTokens\) > 0\) body\.max_tokens = Number\(maxTokens\);/.test(providers),
-  'the OpenAI-compatible body states max_tokens only when one was given'
+  !/maxTokens\s*=\s*4096/.test(aegisSrc),
+  'the surviving transport does not default maxTokens to an invented 4096'
 );
 assert(
-  !/^\s*maxTokens\s*=\s*\d+,/m.test(providers) && !/^\s*maxTokens\s*=\s*\d+,/m.test(ollama),
+  !/^\s*maxTokens\s*=\s*\d+,/m.test(aegisSrc),
   'no transport has a defaulted maxTokens parameter'
 );
-// No floor and no ceiling live on this side. The Messages API does require
-// `max_tokens`, but a number this client can only guess at is what truncated
-// reasoning turns, and the platform states its own — aegis1 sizes the pooled
-// class from `effort` server-side and reads a body max_tokens as a ceiling OVER
-// that ladder. So the Anthropic transport follows the same rule as the
-// OpenAI-compatible one, and this file asserts the ABSENCE of the invented
-// constant it used to require: a reference to one was a throw before the first
-// byte, which is what shipped.
+// And the renderer's own call site still states nothing it did not derive.
 assert(
-  !/MIN_MAX_TOKENS|MAX_TOKENS\s*=/.test(providers),
-  'the Anthropic transport declares no token floor or ceiling of its own'
+  /budgetFor\(model, undefined, effort\)/.test(readFileSync(join(root, 'desktop', 'renderer', 'app.js'), 'utf8')),
+  'send() states the rung through budgetFor() and no cap of its own'
 );
-assert(
-  (providers.match(/body\.max_tokens = Number\(maxTokens\);/g) || []).length === 2,
-  'and states max_tokens only when the caller gave one — on both transports'
-);
-assert(!/maxTokens\s*=\s*4096/.test(ollama), 'the local transport no longer invents a 4096 budget');
 
 console.log(
   'Budget tests passed: the ceiling is a label, effort sizes the call, and both copies of the rule agree.'

@@ -48,11 +48,6 @@ async function runWith(env, payload = {}) {
   try {
     const engine = createLocalEngine({
       aegis: { chatCompletion: (o) => provider.chat(o) },
-      ollama: {},
-      providers: {
-        openaiCompatible: (o) => provider.chat(o),
-        anthropicMessages: (o) => provider.chat(o),
-      },
     });
     const res = await engine.chat(
       { class: 'aegis', prompt: 'check the plan', sessionId: 's1', ...payload },

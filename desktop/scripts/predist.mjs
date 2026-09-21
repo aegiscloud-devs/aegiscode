@@ -30,6 +30,10 @@ const staged = [
   // cannot reach outside its own directory.
   ['client', 'credentials.js'],
   ['client', 'session-store.js'],
+  // The shared `~/.aegiscode/.env` loader — main.js requires it at start-up so
+  // the account key and every BYOK provider key can come from one file, and the
+  // packaged app cannot reach outside its own directory to find it.
+  ['client', 'env-file.js'],
 ];
 
 mkdirSync(destDir, { recursive: true });
