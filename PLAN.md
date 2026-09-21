@@ -24,7 +24,10 @@ Status:
 - [x] Phase 12 — P4 release: cut 0.7.8 / 6.7.8
 - [x] Phase 13 — CI unblock: self-hosted runner
 - [x] Phase 14 — harness determinism: the successor-turn timeout
-- [ ] Phase 15 — desktop parity: ship `byok` + `aegis` only (drop `ollama` and the two custom classes)
+- [ ] Phase 15 — desktop parity I/IV: engine core (`aegis` + `byok` only)
+- [ ] Phase 16 — desktop parity II/IV: renderer, tools, packaging
+- [ ] Phase 17 — desktop parity III/IV: CLI vendor tree + test sweep
+- [ ] Phase 18 — desktop parity IV/IV: harness re-point + docs
 
 ---
 
@@ -674,16 +677,17 @@ hygiene).
 
 ---
 
-## Phase 15 ⬜ — desktop parity: ship `byok` + `aegis` only
+## Phase 15 ⬜ — desktop parity I/IV: the engine core (`aegis` + `byok` only)
 
-**Status: not started. D1 resolved — see below (re-point at `aegis`).**
+**Status: D1 resolved (re-point at `aegis`).** This is **slice 1 of 4** — the
+atomic engine core. Phases 16–18 continue it; do not start them in this phase.
 
 ### Goal
 
 The CLI already ships exactly two model classes — `HOST_CLASSES = ['aegis',
 'byok']` in `cli/src/engine.js` (done in `c0598de`). The desktop still ships
-five. This phase makes the desktop match: **`aegis` (Aegis Cloud) and `byok`
-(bring your own provider key) survive; `ollama`, `openai-compat` and
+five. The four phases together make the desktop match: **`aegis` (Aegis Cloud)
+and `byok` (bring your own provider key) survive; `ollama`, `openai-compat` and
 `anthropic` are removed entirely.**
 
 "Removed entirely" means the class, its transport module, its endpoint-policy
@@ -707,19 +711,42 @@ is the single easiest way to break this refactor — hence step 15.0.
 | `CLASSES` entries `ollama`, `openai-compat`, `anthropic` | **delete** | no longer shipping |
 | `CUSTOM_CLASSES` constant (`engine.js:78`) | **delete** | defined solely for the two custom classes |
 | `REQUIRES_STATED_BUDGET` (`engine.js:141`) | **delete** | keyed on class `anthropic` only; no class needs a stated budget once it is gone |
-| same constant, mirrored at `desktop/renderer/budget.js:95` | **delete** | move together or the renderer diverges |
+| same constant, mirrored at `desktop/renderer/budget.js:95` | **delete** | Phase 16 — move together or the renderer diverges |
 | `desktop/lib/local/ollama.js` | **delete** | only the `ollama` class imports it |
 | `desktop/lib/local/providers.js` | **delete** | `anthropicMessages`/`openaiCompatible` are reached only by the custom classes; `byok` goes through `aegis.byokChatCompletion` and `aegis` through the cloud client |
 | `desktop/lib/local/endpoints.js` | **delete** | `isLocalEndpoint`/`remoteRefusal`/`isDirectDialRow` police custom endpoints only — see 15.3 |
 
-### Steps
+### Execution contract — read this before editing anything
+
+1. **Split, don't swallow.** Phases 15–18 are four separate phases *because* the
+   single-phase form already failed once (2026-09-21: the worker exhausted its
+   round budget mid-refactor and the runner auto-committed a non-runnable
+   `engine.js`). Work only the slice named in the phase header.
+2. **Land atomically.** `desktop/` must be runnable at every commit. Never
+   remove a signature member before its consumers (that is precisely what
+   produced the broken state).
+3. **The runner auto-commits whatever is in the tree when you stop.** So if you
+   cannot finish *and* verify inside your round budget,
+   `git checkout -- <the files you touched>` **before you stop**. A phase left
+   unstarted is recoverable; a committed broken tree is not, and it is worse
+   than no progress.
+4. **Spend rounds on edits, not exploration.** The step numbers below name the
+   files and line anchors; read only those. Do not re-derive the plan.
+5. **Baseline once.** 15.0 records it; nothing later re-runs the whole matrix
+   until the slice is complete.
+
+### Steps (this phase: engine core only)
 
 **15.0 — Baseline + the provider/class distinction.**
-Before editing, record the green baseline (`desktop`: `npm run check`; each
-`npm run test:*`; `node test/desktop-shell.mjs`; the CLI's `npm test` from
-`cli/`) so a later red run can be attributed. Then enumerate every
-`anthropic`/`openai`/`deepseek` occurrence and classify it as *byok provider
-name* (keep) or *custom model class* (delete). Do not bulk-substitute.
+Record the green baseline (`desktop`: `npm run check`; each `npm run test:*`;
+`node test/desktop-shell.mjs`; the CLI's `npm test` from `cli/`) so a later red
+run can be attributed. **Known pre-existing red at HEAD, not yours to fix here:**
+`desktop` `npm run test:engine` fails at `test/local-engine.test.mjs:1265` —
+`ASSERT FAILED: unconfigured provider is refused, got No key for "anthropic"
+yet…`. Record it verbatim as the baseline exception; Phase 17 owns that test.
+Then enumerate every `anthropic`/`openai`/`deepseek` occurrence and classify it
+as *byok provider name* (keep) or *custom model class* (delete). Do not
+bulk-substitute.
 
 **15.1 — Engine registry (`desktop/lib/local/engine.js`).** Drop the
 `./endpoints.js` import (line 51); delete `CUSTOM_CLASSES` (78); cut `CLASSES`
@@ -728,11 +755,8 @@ now-meaningless `cls` parameter from `reasoningBudget()` plus its call site
 (193); remove `ollama`/`providers` from `createLocalEngine`'s signature (397).
 Then rework every consumer **in the same commit** — `customStatus()` (690–702),
 `listClasses()` (698), `listModels()` (726–774), `dispatch()` (964, 1037–1038),
-the direct-dial gate in `chat()`, and the `cls === 'aegis' || cls === 'ollama'`
-checks (1139, 1143). Note: removing the signature members before their
-consumers is what produced the broken mid-edit state on 2026-09-21 — keep the
-file runnable between commits, or accept that this step lands as one atomic
-edit.
+the direct-dial gate in `chat()` (1207–1228), and the
+`cls === 'aegis' || cls === 'ollama'` checks (1139, 1143).
 
 **15.2 — `desktop/main.js`.** Drop `require('./lib/local/ollama.js')` (65),
 the `ollama`/`providers` args to `createLocalEngine` (810–822), and `ollama`
@@ -744,85 +768,11 @@ from the object returned at 1333.
 `endpoints.js` then has zero non-test importers → delete the module. Also drop
 `test/preset-fill.test.mjs:183`'s `require` of it.
 
-**15.4 — Renderer.** `desktop/renderer/app.js`: delete `CUSTOM_CLASSES` (167),
-the custom placeholders (178–179), the custom endpoint wire specs (199–211),
-the ollama hint (2698), the two provider entries at 2862–2863, and the stale
-comment at 3363. `desktop/renderer/budget.js:95`: delete the
-`REQUIRES_STATED_BUDGET` mirror. **Verify 2862–2863 first** — if those entries
-feed the *byok provider* list rather than the class list, they stay. Check
-`desktop/renderer/usage.js:134` too: a comment about a settled charge naming
-"a direct provider, ollama, a custom endpoint" needs rewording, not deleting.
+### Decision D1 — what drives the in-process tool loop? (RESOLVED)
 
-**15.5 — `desktop/lib/local/tools.js`.** `anthropicTools` /
-`anthropicToOpenaiTools` and the `wire === 'anthropic'` branch (222–269) look
-dead or nearly so, since the surviving classes are OpenAI-wire (`aegis`) or
-stateless (`byok`). **Confirm before deleting** — if anything in the aegis path
-still selects the anthropic wire, this step is dropped.
-
-**15.6 — CLI vendor tree.** `cli/src/engine.js` still passes `ollama` and
-`providers` stubs into the vendored engine (85–97); remove them. Regenerate
-`cli/vendor/` with `cli/scripts/predist.mjs` — `test/cli-sync.test.mjs` asserts
-the tree matches source, and `providers.js`/`endpoints.js`/`ollama.js` drop out
-of the staging list. `.github/workflows/ci.yml:61` asserts
-`cli/vendor/desktop/lib/local/engine.js` exists; that must keep passing.
-
-**15.7 — `desktop/package.json`.** Remove `providers.js`, `ollama.js` and
-`endpoints.js` from the `check` script; they no longer exist.
-
-**15.8 — Tests.** Heaviest references first: `test/local-engine.test.mjs` (77),
-`test/aegis-key.test.mjs` (26), `test/preset-fill.test.mjs` (19),
-`test/budget.test.mjs` (19), `test/model-dispatch.mjs` (10),
-`test/local-tools.test.mjs` (10), then the 1–3 reference files
-(`cli-approval`, `autonomous-mode`, `sync-sessions`, `session-rounds`,
-`aegis-reasoning`, `round-cap`, `cloud-usage`, `budget-authority`). Delete
-`test/endpoints.test.mjs` and `test/local-providers.test.mjs` outright — they
-test modules this phase deletes. Where a case exists *only* to cover a removed
-class, delete it; where it covers shared behaviour through a removed class as a
-convenient driver, re-point it at `aegis` (or a fixture) rather than deleting
-the assertion.
-
-**15.9 — Docs.** `desktop/README.md`, root `README.md`, `cli/README.md`, and
-`docs/byok-and-cloud-api.md`, `docs/product-plan.md`,
-`docs/launch-copy-x-youtube.md`, `docs/marketing-plan-social.md`,
-`docs/reddit-drafts.md`. The CLI's README was already rewritten in `c0598de`;
-use that wording.
-
-### Decision required: D1 — what drives the in-process tool loop?
-
-**This is the blocker, and it is not a find-and-replace.**
-
-`desktop/test/marketing-shots-main.js:35-38` states plainly that
-`openai-compat` "is the one wire class whose tool loop runs **in-process** … The
-cloud class relays tool_calls but has no approval gate", and
-`desktop/test/electron-smoke-main.js` drives its whole run the same way — the
-blocked-class leg at 508–600 literally switches *to* `openai-compat` and asserts
-the refused base URL was replaced (i.e. it tests `endpoints.js` policy as a
-user-visible behaviour). Deleting the custom classes removes the only transport
-those harnesses can drive:
-
-- the approval-gate / tool-card legs of the Electron smoke test,
-- the tool-loop turns in the marketing screenshot generator,
-- `test/endpoints.test.mjs`'s subject matter.
-
-So one of these must be chosen **before** 15.1 starts:
-
-- **(a) Re-point at `aegis`.** The engine appears to run its tool loop for
-  `aegis` too (`toolsEnabled = cls !== 'byok'`, and the pool "forwards `tools`
-  to the provider and returns tool_calls"). If the aegis path really does expose
-  the approval gate in-process, re-point the harnesses at the existing
-  `AEGIS_API_BASE` stub and this phase stays a refactor. **Verify first** — if
-  the gate lives only in the custom transport, (a) is a lie and the smoke legs
-  silently stop testing anything, which is worse than deleting them.
-- **(b) Keep a test-only driver.** Retain `providers.js` + `endpoints.js` as
-  fixtures unreachable from `CLASSES`/the renderer. Honest and cheap, but it
-  keeps two large modules alive purely for CI and leaves the "unreachable class"
-  smell that motivated this phase.
-- **(c) Retire the legs.** Delete the tool-loop/approval smoke assertions and
-  the marketing shots that need them. Cheapest, but it cuts real coverage —
-  Phase 9's scroll-hold/interrupt work hangs off that harness.
-
-**RESOLVED 2026-09-21: take (a). (c) is NOT authorized. (b) is the fallback
-only if a re-pointed leg cannot be made to go red on a negative control.**
+**Take (a): re-point the harnesses at `aegis`. (c) is NOT authorized. (b) is
+the fallback only if a re-pointed leg cannot be made to go red on a negative
+control.**
 
 Verification (read, not asserted): the approval gate is **class-independent**.
 `gatedExecuteTool` (`desktop/lib/local/engine.js:608`) is called from the shared
@@ -839,53 +789,142 @@ custom classes drive today.
 
 Therefore the harness comment at `desktop/test/marketing-shots-main.js:35-38`
 ("The cloud class relays tool_calls but has no approval gate in this build") is
-**stale/incorrect** — fix that comment in step 15.9, do not treat it as evidence
-for (b).
+**stale/incorrect** — Phase 18 fixes that comment; it is not evidence for (b).
 
-Consequence for the two harnesses:
-- `electron-smoke-main.js` / `marketing-shots-main.js`: re-point the driven
-  turns to `class: 'aegis'` with `AEGIS_API_BASE` on the loopback stub (already
-  required by the boot gate), and have the stub answer with OpenAI-shape
-  `tool_calls`. **Negative-control every re-pointed leg** — break the gate
-  (e.g. auto-approve) and confirm the leg goes red before trusting green.
-- `electron-smoke-main.js:508/592`'s blocked-class leg asserts `endpoints.js`
-  policy as behaviour. That *feature* is being deleted, so the assertion has no
-  subject left: retire that leg explicitly and say so in the report. Do not
-  quietly re-point it at `aegis` to keep a green tick — a re-pointed leg that no
-  longer tests the refused-URL rule is exactly the silent coverage loss D1
-  warns about.
+The harness work itself lands in Phase 18 (it needs the engine to be stable
+first). Do not touch the harnesses in this phase.
 
-Never leave the tree dirty across sessions, and land 15.1 atomically.
+### Exit criteria (this phase)
 
-### Exit criteria
+- `desktop/lib/local/engine.js`, `main.js` and `settings.js` are runnable and
+  free of dangling references: `grep -n "isLocalEndpoint\|remoteRefusal\|CUSTOM_CLASSES\|ollama\.\|providers\." desktop/lib/local/engine.js desktop/main.js desktop/lib/settings.js`
+  returns only *byok-provider* occurrences (if any), never a call into a
+  removed module. `node --check` each file.
+- `CLASSES` lists exactly `aegis` and `byok`.
+- `desktop/lib/local/endpoints.js` is deleted, with no non-test `require` left.
+- `desktop`: `npm run check` clean. `npm run test:engine` may remain red **only**
+  with the same pre-existing `local-engine.test.mjs:1265` assertion recorded in
+  15.0; any *new* failure is yours to fix before you stop.
+- `git status` clean; nothing pushed to `origin/main`.
 
-- `CLASSES` lists exactly `aegis` and `byok`; no reachable path constructs,
-  dispatches to, or names a removed class — proven by grep over `desktop/`,
-  `cli/src/` and the generated `cli/vendor/`, not by inspection.
-- The renderer's class picker offers exactly two classes (mirror the CLI check
-  that confirmed `HOST_CLASSES`).
-- `ollama.js`, `providers.js`, `endpoints.js` are deleted, with no dangling
-  `require` anywhere (including `desktop/package.json`'s `check` list).
-- `desktop`: `npm run check` clean; every `npm run test:*` green. Repo-wide:
-  `find test desktop/test -name '*.test.mjs'` all green, `test/desktop-shell.mjs`
-  and `test/smoke.mjs` green; `cli`'s `npm test` green, `cli-sync` green.
-- `git status` clean; nothing pushed to `origin/main` without the user's say-so.
+### Not in scope (later phases)
 
-### Risks
+Renderer/`tools.js`/packaging (Phase 16), the CLI vendor tree and the test
+sweep (Phase 17), the harness re-point + negative controls and the docs
+(Phase 18). Anything under `/home/neo/aegiscodex-dev` (the live engine — off
+limits absent an explicit instruction naming it), and the queued `aegis1` rex
+bump.
 
-- **Silent coverage loss (D1).** The likeliest bad outcome: the harnesses keep
-  exiting 0 while no longer exercising the tool loop or the approval gate.
-  Negative-control every re-pointed leg — break the thing it claims to test and
-  confirm it goes red.
-- **Provider/class conflation.** A bulk `anthropic` → delete sweep silently
-  breaks the `byok` provider list. This is step 15.0's whole purpose.
-- **Vendor drift.** Editing `desktop/` without regenerating `cli/vendor/` fails
-  `cli-sync`; regenerating without editing leaves the CLI on stale classes.
-- **A partial land is worse than none.** The 2026-09-21 attempt left
-  `engine.js` non-runnable mid-edit. Land the engine change atomically, and do
-  not leave the tree dirty across sessions.
+---
 
-### Not in scope
+## Phase 16 ⬜ — desktop parity II/IV: renderer, tools, packaging
 
-Anything under `/home/neo/aegiscodex-dev` (the live engine — off limits absent
-an explicit instruction naming it), and the queued `aegis1` rex bump.
+**Slice 2 of 4.** Requires Phase 15 landed. Same execution contract.
+
+**16.1 — Renderer.** `desktop/renderer/app.js`: delete `CUSTOM_CLASSES` (167),
+the custom placeholders (178–179), the custom endpoint wire specs (199–211),
+the ollama hint (2698), the two provider entries at 2862–2863, and the stale
+comment at 3363. `desktop/renderer/budget.js:95`: delete the
+`REQUIRES_STATED_BUDGET` mirror. **Verify 2862–2863 first** — if those entries
+feed the *byok provider* list rather than the class list, they stay. Check
+`desktop/renderer/usage.js:134` too: a comment about a settled charge naming
+"a direct provider, ollama, a custom endpoint" needs rewording, not deleting.
+
+**16.2 — `desktop/lib/local/tools.js`.** `anthropicTools` /
+`anthropicToOpenaiTools` and the `wire === 'anthropic'` branch (222–269) look
+dead or nearly so, since the surviving classes are OpenAI-wire (`aegis`) or
+stateless (`byok`). **Confirm before deleting** — if anything in the aegis path
+still selects the anthropic wire, this step is dropped and the reason recorded.
+`tools.js`'s `T.toolsFor(wire, …)` must keep working for `wire === 'openai'`.
+
+**16.3 — `desktop/lib/local/ollama.js` + `providers.js` deletion.** Once 15.1,
+15.2, 16.1 and 16.2 have removed every importer, delete both modules and
+`desktop/lib/local/endpoints.js`'s last stragglers. Prove it by grep before
+deleting, not by inspection.
+
+**16.4 — `desktop/package.json`.** Remove `providers.js`, `ollama.js` and
+`endpoints.js` from the `check` script; they no longer exist.
+
+**Exit criteria.** No reachable path constructs, dispatches to, or names a
+removed class — proven by `grep -rn "ollama\|openai-compat\|CUSTOM_CLASSES" desktop/`
+returning nothing outside byok-provider ids and unrelated words. The renderer's
+class picker offers exactly two classes (mirror the CLI check that confirmed
+`HOST_CLASSES`). `npm run check` clean; every `npm run test:*` green except the
+recorded pre-existing `test:engine` assertion. `test/desktop-shell.mjs` green.
+
+---
+
+## Phase 17 ⬜ — desktop parity III/IV: CLI vendor tree + the test sweep
+
+**Slice 3 of 4.** Requires Phase 16 landed.
+
+**17.1 — CLI vendor tree.** `cli/src/engine.js` still passes `ollama` and
+`providers` stubs into the vendored engine (85–97); remove them. Regenerate
+`cli/vendor/` with `cli/scripts/predist.mjs` — `test/cli-sync.test.mjs` asserts
+the tree matches source, and `providers.js`/`endpoints.js`/`ollama.js` drop out
+of the staging list. `.github/workflows/ci.yml:61` asserts
+`cli/vendor/desktop/lib/local/engine.js` exists; that must keep passing.
+
+**17.2 — Test sweep.** Heaviest references first: `test/local-engine.test.mjs`
+(77), `test/aegis-key.test.mjs` (26), `test/preset-fill.test.mjs` (19),
+`test/budget.test.mjs` (19), `test/model-dispatch.mjs` (10),
+`test/local-tools.test.mjs` (10), then the 1–3 reference files
+(`cli-approval`, `autonomous-mode`, `sync-sessions`, `session-rounds`,
+`aegis-reasoning`, `round-cap`, `cloud-usage`, `budget-authority`). Delete
+`test/endpoints.test.mjs` and `test/local-providers.test.mjs` outright — they
+test modules this work deletes. Where a case exists *only* to cover a removed
+class, delete it; where it covers shared behaviour **through** a removed class
+as a convenient driver, re-point it at `aegis` (or a fixture) rather than
+deleting the assertion, and negative-control the re-point.
+
+**17.3 — The `test:engine` failure.** `test/local-engine.test.mjs:1265`'s
+"unconfigured provider is refused" case must end this phase **either** green
+because its subject moved to a surviving class, **or** deliberately deleted with
+one line in the report saying which assertion replaced it — never silently
+dropped. This is the pre-existing baseline red recorded in 15.0.
+
+**Exit criteria.** `find test desktop/test -name '*.test.mjs'` all green;
+`test/desktop-shell.mjs` and `test/smoke.mjs` green; `cli`'s `npm test` and
+`npm run check` green; `cli-sync` green. `git status` clean.
+
+---
+
+## Phase 18 ⬜ — desktop parity IV/IV: harness re-point, then docs
+
+**Slice 4 of 4.** Requires Phase 17 landed.
+
+**18.1 — Re-point the harnesses at `aegis` (D1 option (a)).**
+`desktop/test/electron-smoke-main.js` and `desktop/test/marketing-shots-main.js`
+currently drive their turns with `class: 'openai-compat'` (smoke 508/592,
+shots 99/341/352) pointed at a loopback stub. Re-point those driven turns to
+`class: 'aegis'` with `AEGIS_API_BASE` on the loopback stub (already required by
+the boot gate) and have the stub answer with OpenAI-shape `tool_calls`, which
+`extractToolCalls` normalises.
+
+- **Negative-control every re-pointed leg**: break the thing the leg claims to
+  test (e.g. make the gate auto-approve) and confirm the leg goes **red** before
+  you trust its green. A re-pointed leg that still passes when the gate is
+  removed is the silent coverage loss D1 warns about — report it as a FAIL, and
+  fall back to D1 option **(b)** (keep `providers.js`/`endpoints.js` as
+  test-only fixtures) rather than shipping a leg that tests nothing.
+- **`electron-smoke-main.js:508/592`'s blocked-class leg** asserts
+  `endpoints.js` policy as behaviour. That feature is being deleted, so the
+  assertion has no subject left: **retire that leg explicitly** and say so in
+  the report. Do not quietly re-point it at `aegis` to keep a green tick.
+
+**18.2 — Docs.** `desktop/README.md`, root `README.md`, `cli/README.md`, and
+`docs/byok-and-cloud-api.md`, `docs/product-plan.md`,
+`docs/launch-copy-x-youtube.md`, `docs/marketing-plan-social.md`,
+`docs/reddit-drafts.md`. The CLI's README was already rewritten in `c0598de`;
+use that wording. **Also fix the stale comment at
+`desktop/test/marketing-shots-main.js:35-38`** (the "cloud class has no
+approval gate" claim that D1 disproved). Grep the docs for the removed class
+names and rewrite every hit that describes shipping behaviour — the marketing
+copy's class list is user-visible.
+
+**Exit criteria.** `npm run shots` still produces its PNGs (or the report states
+plainly which states are no longer reachable and why). `find test desktop/test
+-name '*.test.mjs'` all green; `npm run check` clean repo-wide; `git status`
+clean; nothing pushed to `origin/main` without the user's say-so. Mark the
+`## Phase 15` heading ✅ with a note that 15–18 shipped as one refactor, and
+check off all four Status lines.
