@@ -80,6 +80,7 @@ const ELEMENT_IDS = {
   apiKeyHint: 'api-key-hint',
   classSelect: 'class-select',
   modelSelect: 'model-select',
+  modelFree: 'model-input',
   budgetHint: 'budget-hint',
   autonomousToggle: 'autonomous-toggle',
   autonomousToggleWrap: 'autonomous-toggle-wrap',
@@ -172,6 +173,17 @@ const AUTONOMOUS_CLASS = 'aegis';
 // already filters out of settings.list(); never render it as a provider row
 // even if a stale store still surfaces it (defect #1).
 const RESERVED_PROVIDERS = new Set(['__aegis', 'aegis']);
+// The local-model class's config row. `local` is a legitimate provider id (not
+// a reserved namespace like the AEGIS key), so it is a normal row in the store
+// — but it is the only row whose payload is an ENDPOINT rather than a
+// credential, which is why it is rendered by its own builder below instead of
+// buildSettingRow. The store refuses a remote URL for it at the set() seam
+// (desktop/lib/settings.js) and the engine re-checks before every call, so the
+// value typed here can only ever address this machine or this LAN.
+const LOCAL_PROVIDER = 'local';
+// Ollama's stock port: the address a freshly installed daemon actually answers
+// on, so the field's placeholder is also the value a blank save falls back to.
+const LOCAL_DEFAULT_BASE = 'http://localhost:11434';
 // Where a user without a key gets one. The class picker defaults to Aegis Cloud
 // and the catalog is key-gated, so this is the first thing a new install needs;
 // it lives here rather than inline so the Model hint and any future "connect"
@@ -480,14 +492,26 @@ function updateAutonomousControlsVisibility() {
 // answer identically, so neither can drift.
 
 /**
- * The model id the budget control has to reason about right now.
+ * The model id the user has actually selected right now.
  *
- * One source now: the picker. The typed field this used to read for a custom
- * endpoint went with those classes — and with it the only path by which
- * `budgetFor()` could be asked about an id the engine never listed.
+ * Two possible sources, and visibility decides which wins. A local daemon that
+ * lists no models leaves the picker empty, so the local class shows a typed-tag
+ * box in that state; when that box is on screen it IS the selection. An empty
+ * box is left to mean "nothing chosen" rather than falling through to a stale
+ * picker entry — the transport answers a blank model with a 400 naming the
+ * problem, which is more honest than dialing a model the user did not pick.
+ * Every other class has only the picker.
  */
-function currentBudgetModel() {
+function currentModelId() {
+  if (els.modelFree && !els.modelFree.hidden) {
+    const typed = els.modelFree.value.trim();
+    if (typed) return typed;
+  }
   return els.modelSelect.value;
+}
+
+function currentBudgetModel() {
+  return currentModelId();
 }
 
 /**
@@ -2525,6 +2549,8 @@ async function loadModels(cls) {
 
   els.modelSelect.hidden = false;
   els.modelSelect.disabled = false;
+  els.modelFree.hidden = true;
+  els.modelFree.value = '';
   els.modelHint.textContent = '';
 
   els.modelSelect.innerHTML = '';
@@ -2544,6 +2570,20 @@ async function loadModels(cls) {
     // The hint is where a user finds out they can connect at all — a raw
     // "listModels failed" told them only that something was broken.
     const needsKey = Boolean(data && data.needsKey);
+    // `local` reports two states the other classes cannot have. `needsDaemon`
+    // means the probe found nothing listening (the transport never throws for
+    // that — no daemon is the normal state on a fresh install, not an error).
+    // `listed === false` means something answered but the model LIST failed,
+    // which is recoverable: the daemon may be llama.cpp/LM Studio/vLLM, none of
+    // which serve Ollama's /api/tags, so the user can still type a model id.
+    const needsDaemon = Boolean(data && data.needsDaemon);
+    const listed = !(data && data.listed === false);
+    // Typed tag: shown only when the picker has nothing to offer, which is
+    // precisely the state the transport's own error message names ("pick one
+    // from the model list, or type a tag"). When the daemon hands us a list the
+    // picker is the affordance, and a second field would only be a way to typo
+    // a tag that is already in the dropdown.
+    els.modelFree.hidden = !(cls === 'local' && (needsDaemon || !listed));
     for (const m of list) {
       modelMeta.set(m.id, m);
       const opt = document.createElement('option');
@@ -2554,8 +2594,22 @@ async function loadModels(cls) {
     let hint;
     if (needsKey) {
       hint = null; // carries a link, built below
+    } else if (needsDaemon) {
+      // Not an error: a fresh install has no daemon running. The transport
+      // reports this as a STATE and never throws for it, so the copy says what
+      // unblocks the class rather than what went wrong.
+      hint = `No local model server at ${(data && data.baseURL) || 'the configured address'} — ` +
+        'start Ollama, or set Base URL below to llama.cpp / LM Studio, then Refresh.';
+    } else if (cls === 'local' && !listed) {
+      // Something answered but it does not speak Ollama's /api/tags. That is
+      // recoverable, not fatal: the model LIST is Ollama-specific, the CHAT
+      // surface is plain OpenAI-compatible, so a typed tag works.
+      hint = 'That address answered but listed no models — not Ollama? ' +
+        'Type the model tag in the box above and send.';
     } else if (!list.length) {
-      hint = 'No models listed.';
+      hint = cls === 'local'
+        ? 'No models on this server yet — pull one first (ollama pull llama3.2).'
+        : 'No models listed.';
     } else if (cls === 'byok' && data && data.needsAegisKey) {
       // Enforced by this CLIENT, not by the server, so it no longer waits on
       // the server's fee.require_balance flag (off by default): the shared
@@ -2577,7 +2631,7 @@ async function loadModels(cls) {
     }
     // Display-only: what this model says its own output limit is. It sizes no
     // request — budgetFor() answers that from the Effort rung.
-    const ceiling = maxTokensCeiling(modelMeta.get(els.modelSelect.value));
+    const ceiling = maxTokensCeiling(modelMeta.get(currentModelId()));
     if (needsKey) {
       // The hint elements are bare <p>s, so the link has to be a real child
       // node — a text assignment would wipe it (same shape as capNotice).
@@ -2658,6 +2712,101 @@ function buildSettingRow({ provider, name, cfg, onSave, onRemove }) {
   return row;
 }
 
+/**
+ * The `local` class's own settings row: a Base URL, and no key field.
+ *
+ * Every other row is a `byok:<provider>` and so is a key row — the endpoint is
+ * AEGIS's relay, dictated by the server. This one is the inverse: a local
+ * daemon takes no credential at all (local.js sends no Authorization header
+ * because there is nothing to send), so a key input here would invent a secret
+ * that does not exist and invite a user to paste a real one into a field with
+ * no consumer. The only thing to configure is WHERE the daemon listens.
+ *
+ * Preview text is the resolved value rather than the stored one: an empty store
+ * means "use the default", and the row has to say which address that is or the
+ * blank field reads as "unconfigured" while the class is in fact usable.
+ */
+function buildLocalSettingRow(cfg) {
+  const provider = LOCAL_PROVIDER;
+  const row = document.createElement('div');
+  row.className = 'setting-row';
+  row.dataset.provider = provider;
+
+  const label = document.createElement('div');
+  label.className = 'setting-name';
+  label.textContent = 'Local model server';
+  row.appendChild(label);
+
+  const baseInput = document.createElement('input');
+  baseInput.type = 'text';
+  baseInput.className = 'setting-input';
+  baseInput.id = 'local-base-url';
+  baseInput.autocomplete = 'off';
+  baseInput.spellcheck = false;
+  baseInput.placeholder = LOCAL_DEFAULT_BASE;
+  baseInput.value = cfg.baseURL || '';
+  baseInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveLocalBase(baseInput.value);
+  });
+  row.appendChild(baseInput);
+
+  const status = document.createElement('div');
+  status.className = 'setting-status';
+  status.textContent = cfg.baseURL ? cfg.baseURL : `default (${LOCAL_DEFAULT_BASE})`;
+  row.appendChild(status);
+
+  const actions = document.createElement('div');
+  actions.className = 'setting-actions';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'ghost-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', () => saveLocalBase(baseInput.value));
+  actions.appendChild(saveBtn);
+
+  // "Reset", not "Remove": clearing the row is not the same action as dropping
+  // a provider key. A cleared URL is not "no endpoint" — the class then runs on
+  // local.js's own default — so the button says what it actually does.
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.className = 'ghost-btn danger';
+  resetBtn.textContent = 'Reset';
+  resetBtn.disabled = !cfg.baseURL;
+  resetBtn.addEventListener('click', () => removeSetting(provider));
+  actions.appendChild(resetBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+/**
+ * Persist the local base URL and re-read the row from what the store RETURNED,
+ * not from what was typed. The store is where the policy lives — it refuses a
+ * non-local URL outright (settings.js `remoteRefusal`) — so showing its answer
+ * is the only way the refusal reaches the user as a sentence instead of the
+ * field silently keeping a value that was never written. A blank field saves
+ * the default rather than an empty string, so "cleared" and "configured to the
+ * stock address" cannot become two different states.
+ */
+async function saveLocalBase(baseURL) {
+  els.settingsHint.textContent = 'saving…';
+  try {
+    const value = String(baseURL == null ? '' : baseURL).trim() || LOCAL_DEFAULT_BASE;
+    const cfg = await models.settings.set(LOCAL_PROVIDER, { baseURL: value });
+    const saved = (cfg && cfg.baseURL) || value;
+    els.settingsHint.textContent = `saved: local model server at ${saved}`;
+    await loadSettings();
+    await loadModels(els.classSelect.value);
+  } catch (err) {
+    // A refusal (400) is a user-fixable configuration problem, not a crash;
+    // the transport's message already names the address and the alternative
+    // classes, so it is surfaced verbatim.
+    els.settingsHint.textContent =
+      `save failed: ${err && err.message ? err.message : err}`;
+  }
+}
+
 async function loadSettings() {
   els.settingsList.innerHTML = '';
   let settings = [];
@@ -2668,6 +2817,21 @@ async function loadSettings() {
   }
   if (Array.isArray(settings)) {
     settings = settings.filter((s) => s && !RESERVED_PROVIDERS.has(s.provider));
+  }
+
+  // local: ONE fixed row, always rendered, because the class always exists —
+  // it needs no key, no catalog entry and no account, so unlike byok there is
+  // nothing the server could answer that would add or remove it. Without this
+  // the class was selectable in the picker and unconfigurable in the UI: a user
+  // running a daemon on a non-default port had no way to say so.
+  //
+  // Rendered BEFORE the byok block so a server that is unreachable (the byok
+  // fetch throws, and that block is wrapped in a try) still leaves the one row
+  // that does not need the server on screen.
+  {
+    const stored = settings.find((s) => s && s.provider === LOCAL_PROVIDER);
+    const cfg = stored || { provider: LOCAL_PROVIDER, baseURL: '', configured: false, keyMask: null };
+    els.settingsList.appendChild(buildLocalSettingRow(cfg));
   }
 
   // byok: one row per provider the server's catalog names (GET
@@ -3020,7 +3184,7 @@ async function send() {
   if (!prompt || els.send.disabled) return;
 
   const cls = els.classSelect.value;
-  const model = els.modelSelect.value;
+  const model = currentModelId();
 
   els.prompt.value = '';
   // This turn's identity. Claiming it here — and clearing `stoppedTurn` —
@@ -3429,6 +3593,18 @@ async function init() {
     const base = els.modelHint.textContent.replace(/ · max output: [\d,]+$/, '');
     els.modelHint.textContent =
       ceiling < FLAT_CEILING ? `${base} · max output: ${ceiling.toLocaleString()}` : base;
+    updateBudgetControls(els.classSelect.value);
+  });
+
+  // The typed model tag IS the selection while the box is visible (see
+  // currentModelId), so the budget note has to follow it keystroke by
+  // keystroke: a local reasoning model sizes the call from the Effort rung and
+  // any other local tag sends no cap at all, and which of the two you get
+  // depends solely on the id in this box. Without this listener the note kept
+  // describing whatever was selected before the box was typed in — the exact
+  // class of "the number shown is not the number sent" the effort work exists
+  // to remove.
+  els.modelFree.addEventListener('input', () => {
     updateBudgetControls(els.classSelect.value);
   });
 
