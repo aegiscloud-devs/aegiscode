@@ -61,7 +61,10 @@ echo 'export AEGIS_API_KEY="aegis_your_key_here"' >> ~/.bashrc   # or ~/.zshrc
 The plugin resolves the credential the same way the other AEGIS hosts do —
 `$AEGIS_API_KEY` first, then `~/.aegiscode/credentials.json` — so a key saved by
 `aegiscode login` or in the desktop's Settings works here with no environment
-variable to keep in sync.
+variable to keep in sync. `~/.aegiscode/.env` is read into the environment at
+startup by the CLI, the desktop app and this MCP server, so it is also a valid
+place to put the key — and the shortest way to configure BYOK provider keys at
+the same time.
 
 ### Slash commands
 

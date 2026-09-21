@@ -90,9 +90,36 @@ older AEGIS CLI left in `~/.aegiscode/config.json` is picked up and copied into
 the 0600 store automatically — `/cloud status` says so if the plaintext copy is
 still there.
 
-That one file is shared: the MCP plugin and AEGIS Desktop read the same store, so
-signing in here signs you in everywhere (see [One memory, shared with AEGIS
-Desktop](#one-memory-shared-with-aegis-desktop)).
+## One file for every key
+
+`~/.aegiscode/.env` is read into the environment once at startup by the CLI, the
+desktop app and the MCP server. It is the shortest way to configure the account
+key *and* every BYOK provider at the same time:
+
+```bash
+# ~/.aegiscode/.env
+AEGIS_API_KEY=aegis_...
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+DEEPSEEK_API_KEY=sk-...
+```
+
+That file alone is enough — no `login`, no `/byok-key <provider>` prompt per
+provider. Both resolution paths already read these names out of the environment;
+the file is just what fills it. `AEGIS_API_KEY` is entry one in the credential
+order below, and a BYOK provider resolves `<PROVIDER>_API_KEY` (upper snake case,
+with a short alias table for the ids that would spell it differently — `google`
+and `gemini` → `GEMINI_API_KEY`, `xai` → `XAI_API_KEY`, `huggingface` →
+`HF_TOKEN`).
+
+Two rules it obeys: a variable **already exported in the launching shell always
+wins**, so a stale file can never shadow `AEGIS_API_KEY=… aegiscode` in CI; and
+the loader only ever reads. If the file is group- or world-readable you are told,
+not silently fixed — the 0600 store stays the only secret this repo writes.
+
+That one file is shared: the MCP plugin and AEGIS Desktop read the same store and
+the same `.env`, so signing in here signs you in everywhere (see [One memory,
+shared with AEGIS Desktop](#one-memory-shared-with-aegis-desktop)).
 
 ## Launch options
 

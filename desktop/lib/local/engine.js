@@ -45,6 +45,7 @@ const os = require('node:os');
 
 const toolsModule = require('./tools.js');
 const promptModule = require('./prompt.js');
+const localTransport = require('./local.js');
 const { ShellSession } = require('./shell.js');
 const { agentSystemPrompt, agentRoleLabel } = require('./agents.js');
 // Cooperative working-tree sharing (see each module's header). The lock
@@ -97,12 +98,20 @@ const WORKTREE_LOCK_WAIT_MS = 1500;
  */
 const MAX_SUBAGENT_DEPTH = 4;
 
-// The two shipping classes — kept in lockstep with the CLI's HOST_CLASSES
+// The three shipping classes — kept in lockstep with the CLI's HOST_CLASSES
 // (cli/src/engine.js). 'anthropic'/'openai'/'deepseek' still appear in this
 // file as BYOK *provider* ids: upstream names, never model classes.
+//
+//   aegis — pooled relay; the account key pays the pool's margin.
+//   byok  — relayed with the caller's provider key; AEGIS bills a handling fee.
+//   local — a model on hardware the user owns, reached over loopback. Bills
+//           nobody because there is no vendor: the compute was already bought.
+//           Fenced by local.js `remoteRefusal()` — a remote URL here would be
+//           an unpaid turn, which is why that gate exists and fails closed.
 const CLASSES = [
   { class: 'aegis', label: 'Aegis Cloud', kind: 'cloud' },
   { class: 'byok', label: 'Bring your own key', kind: 'cloud' },
+  { class: 'local', label: 'Local model', kind: 'local' },
 ];
 
 /** Local settings namespace for one BYOK provider's key. The `byok:` prefix
@@ -423,7 +432,18 @@ function emptyTurnError({ cls, model, maxTokens, finishReason }) {
   return err;
 }
 
-function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConfirmMode }) {
+function createLocalEngine({
+  aegis,
+  settings,
+  tools,
+  promptBuilder,
+  env,
+  getConfirmMode,
+  // Injectable for tests; defaults to the real transport so every existing
+  // caller (desktop/main.js, the CLI's deps.js) wires the local class by
+  // simply existing.
+  localTransport: localT = localTransport,
+}) {
   const controllers = new Map(); // sessionId -> AbortController
   const T = tools || toolsModule;
   const buildSystemPrompt = (promptBuilder && promptBuilder.buildSystemPrompt) || promptModule.buildSystemPrompt;
@@ -710,9 +730,18 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
         });
         return { ...c, configured: anyConfigured };
       }
-      // Unreachable while CLASSES lists only aegis + byok; kept so a future
-      // class added without a status rule reads as unconfigured rather than
-      // silently appearing ready (the "no saved key" fallback shape).
+      if (c.class === 'local') {
+        // Always "configured": this class needs no credential at all, which is
+        // the entire reason it is free. Whether a daemon is actually listening
+        // is a different question, asked where the answer belongs — in
+        // listModels, next to the model list the user is looking at, so the
+        // state reads "start the daemon" instead of "go and configure
+        // something", which is what an unconfigured row would say.
+        return { ...c, configured: true };
+      }
+      // Unreachable while CLASSES lists only aegis + byok + local; kept so a
+      // future class added without a status rule reads as unconfigured rather
+      // than silently appearing ready (the "no saved key" fallback shape).
       return { ...c, configured: false };
     });
   }
@@ -763,7 +792,7 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
       const models = [];
       for (const p of providers) {
         if (!p || !p.id) continue;
-        const local = settings.get(byokNamespace(p.id)) || {};
+        const rowCfg = settings.get(byokNamespace(p.id)) || {};
         // A key from `~/.aegiscode/.env` makes the provider usable, so it must
         // read as configured here — this is the flag `needsProviderKey` is built
         // on, and the one the renderer's per-provider rows mirror. Reporting it
@@ -778,7 +807,7 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
             id: `${p.id}:${modelId}`,
             label: `${p.label || p.id} — ${modelId}`,
             provider: p.id,
-            configured: Boolean(local.configured || fromEnv),
+            configured: Boolean(rowCfg.configured || fromEnv),
           });
         }
       }
@@ -789,13 +818,41 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
         fee,
       };
     }
-    // Unreachable by construction: CLASSES lists only 'aegis' and 'byok', both
-    // returned above. Thrown rather than falling through to an empty list,
-    // because "no models" is a state the renderer renders as a normal empty
-    // picker — an unknown class would look like a configured-but-empty account
-    // instead of the bug it is. Same shape as dispatch's tail.
+    if (cls === 'local') {
+      // No credential to check, so the only question is whether anything is
+      // listening. The probe never throws (local.js), so a machine with no
+      // daemon reports a STATE and the renderer invites the user to start one —
+      // the same shape as the pooled class's `needsKey` above, and for the same
+      // reason: an install in its default state must be told what unblocks it,
+      // not shown a transport error.
+      const cfg = settings.get('local') || {};
+      const baseURL = cfg.baseURL || localT.DEFAULT_BASE;
+      const status = await localT.probe(baseURL);
+      if (!status.running) {
+        return { class: cls, models: [], baseURL: status.baseURL, needsDaemon: true };
+      }
+      // The daemon is up. Its tag list is Ollama's native endpoint, so a
+      // non-Ollama server on the same box (llama.cpp, LM Studio, vLLM) answers
+      // 404 here — recoverable, and it must not cost the class its usability:
+      // the renderer falls back to letting the user type a model name, and the
+      // transport itself never needs this call.
+      let tags = [];
+      let listed = true;
+      try {
+        tags = await localT.listTags(baseURL);
+      } catch {
+        listed = false;
+      }
+      return { class: cls, models: tags, baseURL: status.baseURL, listed };
+    }
+    // Unreachable by construction: CLASSES lists only 'aegis', 'byok' and
+    // 'local', all returned above. Thrown rather than falling through to an
+    // empty list, because "no models" is a state the renderer renders as a
+    // normal empty picker — an unknown class would look like a
+    // configured-but-empty account instead of the bug it is. Same shape as
+    // dispatch's tail.
     throw new Error(
-      `listModels: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis' and 'byok' only`
+      `listModels: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis', 'byok' and 'local' only`
     );
   }
 
@@ -1007,12 +1064,45 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
       }
     }
 
-    // Unreachable by construction: CLASSES lists only 'aegis' and 'byok', both
-    // returned above. Thrown rather than falling through to a default
-    // transport, because a class that silently borrows another's wire format is
-    // this file's recurring failure mode.
+    if (cls === 'local') {
+      // The one class whose turn leaves this machine for hardware the user
+      // owns. `baseURL` comes from the 'local' settings row and is re-checked
+      // by the transport on every call (local.js `remoteRefusal`), so a row
+      // hand-edited to a public address after it was saved still cannot be
+      // dialed — the engine is not the only gate, it is the first one.
+      const baseURL = (opts.cfg && opts.cfg.baseURL) || localT.DEFAULT_BASE;
+      const call = (useTools) =>
+        localT.chat({
+          baseURL,
+          model: opts.model,
+          prompt: opts.prompt,
+          system: opts.system,
+          messages: opts.messages,
+          maxTokens: opts.maxTokens,
+          signal: opts.signal,
+          onDelta: opts.onDelta,
+          ...(useTools && opts.tools.length ? { tools: opts.tools, toolChoice: opts.toolChoice } : {}),
+        });
+      try {
+        return await call(true);
+      } catch (e) {
+        // An older daemon 400s on `tools` it does not understand. Sending none
+        // gets the turn answered — without tool access, which is worse than the
+        // full loop and far better than a 400 the user cannot act on. Retried
+        // once, and only for that one status: a 400 about the model name or the
+        // message shape is not fixed by dropping schemas, and retrying it would
+        // send the same broken turn twice.
+        if (opts.tools.length && e && e.status === 400) return call(false);
+        throw e;
+      }
+    }
+
+    // Unreachable by construction: CLASSES lists only 'aegis', 'byok' and
+    // 'local', all returned above. Thrown rather than falling through to a
+    // default transport, because a class that silently borrows another's wire
+    // format is this file's recurring failure mode.
     throw new Error(
-      `dispatch: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis' and 'byok' only`
+      `dispatch: unknown model class ${JSON.stringify(cls)} — this build ships 'aegis', 'byok' and 'local' only`
     );
   }
 
@@ -1115,7 +1205,10 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
       // aegis carries its own credential on the `aegis` client; byok is the
       // only class whose key comes out of the settings store, and it comes from
       // the provider named in the model id.
-      const cfg = cls === 'byok' ? settings.get(byokNamespace(byokParts.provider)) || {} : {};
+      const cfg =
+        cls === 'byok' ? settings.get(byokNamespace(byokParts.provider)) || {}
+        : cls === 'local' ? settings.get('local') || {}
+        : {};
       // Where a byok key comes from, in order: the encrypted store (a key saved
       // through the app), then the shared `~/.aegiscode/.env` (client/env-file.js,
       // read into process.env at start-up). The store wins when it holds one, so
@@ -1164,12 +1257,21 @@ function createLocalEngine({ aegis, settings, tools, promptBuilder, env, getConf
         throw err;
       }
 
-      // No direct-dial gate here any more. It policed classes that talked to a
-      // user-supplied base URL themselves, which billed nobody — no pooled
-      // margin, no BYOK handling fee, no account key attached — so a remote URL
-      // was an unpaid turn to refuse rather than meter. Those classes are gone;
-      // every surviving turn bills either the AEGIS pool (`aegis`) or the
-      // relay's handling fee (`byok`).
+      // The direct-dial gate, restored for the one class that legitimately
+      // dials. It policed a lane that could reach ANY user-supplied URL, which
+      // billed nobody — no pooled margin, no BYOK handling fee, no account key
+      // attached — so a remote URL there was an unpaid turn to refuse rather
+      // than meter. That open-ended lane is gone for good. `local` is the case
+      // its own reasoning carved out: a model on a machine the user owns, where
+      // there is no vendor to pay in the first place, so there is nothing to
+      // bill and nobody being cheated. Checked here before any byte goes out,
+      // and again inside the transport, because a settings row can be edited on
+      // disk after it was written. Anything not local is refused, not metered —
+      // remote models belong on `aegis` or `byok`, both of which bill.
+      if (cls === 'local') {
+        const refusal = localT.remoteRefusal(cfg.baseURL || localT.DEFAULT_BASE);
+        if (refusal) throw refusal;
+      }
       const base = {
         cls, model, mode: payload && payload.mode, maxTokens, statedMaxTokens, autonomous, sessionId, signal, onDelta, cfg, apiKey, toolChoice,
         effort: payload && payload.effort,

@@ -88,11 +88,11 @@ const engine = createLocalEngine({ aegis, settings, ollama, providers });
 const aegisEngine = (chatCompletion, extra = {}) =>
   createLocalEngine({ aegis: { ...aegis, chatCompletion }, settings, ollama, providers, ...extra });
 
-// listClasses now exposes exactly the two shipping classes.
+// listClasses now exposes exactly the three shipping classes.
 const classes = await engine.listClasses();
-assert(classes.length === 2, `expected 2 classes, got ${classes.length}`);
+assert(classes.length === 3, `expected 3 classes, got ${classes.length}`);
 const names = classes.map((c) => c.class);
-for (const n of ['aegis', 'byok']) {
+for (const n of ['aegis', 'byok', 'local']) {
   assert(names.includes(n), `missing class ${n}`);
 }
 for (const gone of ['ollama', 'openai-compat', 'anthropic']) {
@@ -100,6 +100,10 @@ for (const gone of ['ollama', 'openai-compat', 'anthropic']) {
 }
 assert(classes.find((c) => c.class === 'aegis').configured === true, 'aegis configured (its key is present)');
 assert(classes.find((c) => c.class === 'byok').configured === false, 'byok reports unconfigured with no stored provider row');
+// `local` is always configured: it needs no credential, which is the whole
+// reason it is free. Whether a daemon is listening is reported by listModels
+// as a state, not here as a status.
+assert(classes.find((c) => c.class === 'local').configured === true, 'local is always configured (it needs no key)');
 
 // listModels per class
 // The aegis class offers exactly one choice: the collapsed Nexus brain. Raw

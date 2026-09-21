@@ -389,7 +389,13 @@ async function main(argv = process.argv.slice(2)) {
   // below this point may resolve a credential.
   try {
     const { resolveClientModule } = require('../src/shared.js');
-    require(resolveClientModule('env-file.js')).loadEnvFile();
+    const envResult = require(resolveClientModule('env-file.js')).loadEnvFile();
+    if (envResult.loose) {
+      process.stderr.write(
+        `aegiscode: ${envResult.file} is readable by other accounts ` +
+          `(mode ${envResult.mode.toString(8)}) — consider \`chmod 600\` on it.\n`
+      );
+    }
   } catch (e) {
     process.stderr.write(`aegiscode: could not read ~/.aegiscode/.env: ${e && e.message}\n`);
   }

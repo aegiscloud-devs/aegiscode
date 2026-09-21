@@ -43,8 +43,11 @@ const VERSION = require('../package.json').version;
  * The classes this host can actually run (see the docstring above).
  *  aegis  — the pooled route (account key pays, pool picks the provider; bills).
  *  byok   — the BYOK relay (your provider key, AEGIS bills a handling fee).
+ *  local  — a model on hardware you own, over loopback. Bills nobody because
+ *           there is no vendor; refused outright if the base URL is not local
+ *           (desktop/lib/local/local.js remoteRefusal, fail-closed).
  */
-const HOST_CLASSES = Object.freeze(['aegis', 'byok']);
+const HOST_CLASSES = Object.freeze(['aegis', 'byok', 'local']);
 
 /** The class a turn runs on when nothing else is said. */
 const DEFAULT_CLASS = 'aegis';
@@ -53,13 +56,8 @@ const DEFAULT_CLASS = 'aegis';
 const CLASS_LABELS = Object.freeze({
   aegis: 'AEGIS Cloud (pooled)',
   byok: 'Bring your own key (relayed, billed)',
+  local: 'Local model (your own machine, free)',
 });
-
-function unsupported(label) {
-  return async () => {
-    throw new Error(`aegiscode: ${label} is not available — this client only runs the aegis and byok classes`);
-  };
-}
 
 /**
  * @param {object} client A client from client/aegis.js (createClient()).
@@ -82,19 +80,12 @@ function createEngine({ client, getConfirmMode, getClass, settings: injectedSett
   const local = createLocalEngine({
     aegis: client,
     settings,
-    ollama: {
-      probe: async () => ({ running: false }),
-      listTags: async () => [],
-      chat: unsupported('Ollama'),
-    },
-    // This host only ever asks for 'aegis' or 'byok' (see HOST_CLASSES), never
-    // the desktop engine's own 'anthropic'/'openai-compat' direct-transport
-    // classes — those stay stubs, proof that a code path meant for the
-    // desktop's local-endpoint feature never silently runs here.
-    providers: {
-      anthropicMessages: unsupported('a direct Anthropic endpoint'),
-      openaiCompatible: unsupported('a direct OpenAI-compatible endpoint'),
-    },
+    // No `ollama` or `providers` injection: both were stubs for a transport
+    // this host never runs. The local class is served by the engine's own
+    // `localTransport`, which defaults to ./local.js — vendored alongside this
+    // engine by cli/scripts/predist.mjs — so a local model on the user's own
+    // machine works here with no extra wiring. `byok` never touches a local
+    // transport at all: it is relayed through AEGIS.
     env: {
       platform: process.platform,
       arch: process.arch,
