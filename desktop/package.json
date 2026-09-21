@@ -10,6 +10,11 @@
   "license": "MIT",
   "main": "main.js",
   "homepage": "https://aegiscloud.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aegisinfo/aegiscode-plugin.git",
+    "directory": "desktop"
+  },
   "bin": {
     "aegis": "bin/aegis.js"
   },
