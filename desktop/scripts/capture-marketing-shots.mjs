@@ -79,13 +79,18 @@ function check(name, ok, detail) {
 }
 
 // ---------------------------------------------------------------------------
-// The stubbed transport. Two real wire formats on one loopback origin:
-//   /v1/chat/completions        OpenAI-compatible SSE (the openai-compat class,
-//                               which is the lane that runs the in-process tool
-//                               loop and therefore the approval gate)
-//   /api/v1/chat/completions    the pooled/original SSE shape (unused by the
-//                               driven turns, served so a boot-time call cannot
-//                               error out)
+// The stubbed transport. All on one loopback origin:
+//   /api/tags                   Ollama's native model list. Required: the
+//                               driven class is `local`, and both probe() and
+//                               listTags() (lib/local/local.js) read this path
+//                               to fill the model picker.
+//   /v1/chat/completions        OpenAI-compatible SSE — the wire the `local`
+//                               class speaks, and it is the in-process tool
+//                               loop that owns the approval gate
+//   /v1/models                  OpenAI-shaped list; served so a boot-time
+//                               model-list call cannot error out
+//   /api/v1/chat/completions    the pooled AEGIS SSE shape (unused by the
+//                               driven turns, same reason)
 // ---------------------------------------------------------------------------
 const ANSWER_TEXT = `The short version: an edit is proposed, previewed, and only then applied.
 
@@ -268,7 +273,32 @@ function startStubServer() {
       const url = new URL(req.url || '/', 'http://127.0.0.1');
       state.requests[url.pathname] = (state.requests[url.pathname] || 0) + 1;
 
-      // OpenAI-compatible lane (the one driven).
+      // The `local` class's native model list (Ollama shape). The driven lane
+      // is `local`, and its picker is filled from listTags() — without this
+      // route the renderer correctly reports "no models on this server yet"
+      // and the driven turn never sends a model at all. Both `probe()` and
+      // `listTags()` in lib/local/local.js hit exactly this path.
+      if (url.pathname === '/api/tags') {
+        json(res, {
+          models: [
+            {
+              name: 'stub-coder-7b',
+              model: 'stub-coder-7b',
+              size: 4_700_000_000,
+              details: { family: 'stub', parameter_size: '7B', quantization_level: 'Q4_K_M' },
+            },
+            {
+              name: 'stub-coder-1.5b',
+              model: 'stub-coder-1.5b',
+              size: 1_000_000_000,
+              details: { family: 'stub', parameter_size: '1.5B', quantization_level: 'Q4_K_M' },
+            },
+          ],
+        });
+        return;
+      }
+      // OpenAI-compatible lane (`/v1/models`; kept because the same stub has
+      // to answer a boot-time model-list call without erroring).
       if (url.pathname === '/v1/models') {
         json(res, {
           object: 'list',

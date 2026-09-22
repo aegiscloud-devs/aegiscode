@@ -186,9 +186,13 @@ unlock, and `/class` refuses to leave you on a class with no key rather than
 failing later at the relay. A BYOK turn is **single-shot**: the relay takes no
 `tools` parameter, so the agentic tool loop is off by construction, not by
 preference. Both hosts ship the same three classes: Aegis Cloud, BYOK, and a
-free **Local** class fenced to your own Ollama daemon on loopback — the
-generic custom-endpoint (LM Studio / arbitrary OpenAI- or Anthropic-compatible
-URL) routes that used to exist here were removed from the product for good.
+free **Local** class that points at a model on your own machine or your own
+network — your Ollama daemon at `localhost:11434` by default, and any
+OpenAI-compatible server on that box works too; the endpoint check
+(`desktop/lib/local/local.js`) fails closed against anything public. What was
+removed from the product for good is the generic *remote* direct-dial route to
+hosted providers — those are reachable only through BYOK, which bills the
+handling fee.
 
 It carries the reference design — palette, welcome art, prompt glyphs and
 command vocabulary — pinned by `test/cli-conformance.test.mjs`; `test/cli-render.test.mjs`,
@@ -352,7 +356,7 @@ in the private `ae-guix` product).
 |---|---|---|
 | **Shared thin client** | `client/aegis.js` | Zero-dependency transport to `aegiscloud.org`. The only code in this repo that talks to the backend; runs unchanged under Node (MCP + Electron) and in a browser. |
 | **Claude Code plugin** | `mcp/`, `commands/`, `skills/`, `install.sh`, `.claude-plugin/` | Slash commands + MCP tools inside Claude Code. **Cloud-only** — Claude Code already runs inside a host with its own models. |
-| **AEGIS Desktop** | `desktop/` | Standalone Electron chat app with the two-class model picker, streaming, an agentic tool loop, and cloud sync. Runs without Claude Code. |
+| **AEGIS Desktop** | `desktop/` | Standalone Electron chat app with the three-class model picker, streaming, an agentic tool loop, and cloud sync. Runs without Claude Code. |
 
 ### Repository layout
 

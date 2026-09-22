@@ -25,8 +25,10 @@ Either way, on first launch:
 3. Pick a model class from the picker at the bottom of the composer.
 
 The published package is [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-on npm; this repo is its source. Both classes bill your AEGIS account — either
-the pooled margin, or the BYOK handling fee on top of your own provider key.
+on npm; this repo is its source. Two of the three classes bill your AEGIS
+account — either the pooled margin, or the BYOK handling fee on top of your own
+provider key; the free **Local** class runs on your own hardware and bills
+nobody.
 
 ## Using it
 
@@ -56,15 +58,18 @@ with context intact:
 |---|---|---|---|
 | **Aegis Cloud** | `aegiscloud.org` — one entry, **Nexus**; the pool auto-routes across whichever providers are live | main process | yes — pooled margin |
 | **Bring your own key** | your provider key, relayed by AEGIS — see below | main process | yes — flat AEGIS handling fee |
-| **Local** | your own Ollama daemon on loopback | n/a — no key | no — free, no AEGIS account needed |
+| **Local** | a model on your own machine or network — your Ollama daemon at `localhost:11434` by default | n/a — no key | no — free, no AEGIS account needed |
 
 Get a free AEGIS key at **https://aegiscloud.org** for the Cloud and BYOK
 classes. The generic OpenAI-/Anthropic-compatible direct-dial lanes that used
 to live here were removed for good — those providers are reachable only
 through **Bring your own key**, which bills the handling fee. **Local** is
-narrower and deliberately fenced to loopback: it talks to an Ollama daemon on
-your own machine and nothing else, so there's no vendor to bill and no key to
-hold.
+narrower: it points at a model on your own machine or your own network, and the
+endpoint check (`desktop/lib/local/local.js`) refuses anything public —
+fail-closed, run when the base URL is saved and again before a request is
+dialled. Your Ollama daemon at `localhost:11434` is the default, and any
+OpenAI-compatible server on that box — llama.cpp, LM Studio, vLLM — works by
+pointing the base URL at it. So there's no vendor to bill and no key to hold.
 
 ### Bring your own key (BYOK)
 
