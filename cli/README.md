@@ -180,7 +180,7 @@ The same axes are settable by environment for scripts and CI: `AEGIS_ART`,
 ## First run
 
 A genuine first run walks the reference's onboarding before the session starts —
-the order is `aegiscodex-dev`'s:
+the order is the reference's:
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ launch, and an explicit flag (`-m`, `--light`) always outranks the stored value.
 ## Commands
 
 In a session, plain text is a prompt. `/help` lists commands, grouped by
-category, the way `aegiscodex-dev` does. The registry is that client's, ported
+category, the way the reference does. The registry is that client's, ported
 command for command — 75 entries across nine categories:
 
 | Category | Commands |
@@ -510,7 +510,7 @@ either runs or is a real handler that says honestly what it cannot do.
 
 ## The chatflow
 
-The session is `aegiscodex-dev`'s loop, ported rather than approximated: an
+The session is the reference's loop, ported rather than approximated: an
 alternate-screen frame of header rule, transcript viewport, spinner/effort line,
 input line and status line, driven by a raw key stream.
 
@@ -584,9 +584,9 @@ node cli/scripts/demo.mjs            # from a source checkout
 
 ## Design notes
 
-**It looks like `aegiscodex-dev` on purpose.** The gold/coral/lavender palette,
+**It looks like the reference on purpose.** The gold/coral/lavender palette,
 the `✦`-studded welcome mark (mascot, crescent moon and diving whale), the `❯`
-prompt, the `⎿` hook rows and the `✻` spinner line are the `aegiscodex-dev`
+prompt, the `⎿` hook rows and the `✻` spinner line are the reference's
 design system, adopted wholesale rather than approximated: the palette, glyphs,
 welcome art, working verbs and command vocabulary all come from it, and
 `test/cli-conformance.test.mjs` pins every RGB triple, glyph, spinner frame, verb
@@ -601,7 +601,7 @@ Anywhere else — a pipe, `-p`, CI — turns are written once to the scrollback
 instead, so output stays selectable, searchable and pipeable. A tool you script
 should not become un-scriptable because the interactive mode got nicer.
 
-**The command registry is `aegiscodex-dev`'s, ported.** Names, aliases,
+**The command registry is the reference's, ported.** Names, aliases,
 categories, the palette grouping and the handlers themselves come from it, with
 `test/cli-commands.test.mjs` asserting the full name list so a silent drop
 fails the build. Local capability that the reference has — a dev-server runner,

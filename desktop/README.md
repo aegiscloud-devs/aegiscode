@@ -49,18 +49,22 @@ with **Settings → "Confirm before running tools"** — on by default.
 
 ## Model classes
 
-Pick either of two routes from the model-class picker, switchable
-mid-conversation with context intact:
+Pick from three routes on the model-class picker, switchable mid-conversation
+with context intact:
 
 | Class | Transport | Key held in | Billed? |
 |---|---|---|---|
 | **Aegis Cloud** | `aegiscloud.org` — one entry, **Nexus**; the pool auto-routes across whichever providers are live | main process | yes — pooled margin |
 | **Bring your own key** | your provider key, relayed by AEGIS — see below | main process | yes — flat AEGIS handling fee |
+| **Local** | your own Ollama daemon on loopback | n/a — no key | no — free, no AEGIS account needed |
 
-Get a free AEGIS key at **https://aegiscloud.org**. The local-endpoint classes
-that used to live here — Ollama, and the OpenAI-/Anthropic-compatible direct
-lanes — have been removed; the hosted providers they could reach are on the
-**Bring your own key** class, which bills the handling fee.
+Get a free AEGIS key at **https://aegiscloud.org** for the Cloud and BYOK
+classes. The generic OpenAI-/Anthropic-compatible direct-dial lanes that used
+to live here were removed for good — those providers are reachable only
+through **Bring your own key**, which bills the handling fee. **Local** is
+narrower and deliberately fenced to loopback: it talks to an Ollama daemon on
+your own machine and nothing else, so there's no vendor to bill and no key to
+hold.
 
 ### Bring your own key (BYOK)
 

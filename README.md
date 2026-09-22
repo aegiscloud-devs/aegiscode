@@ -185,11 +185,12 @@ Under `byok` every model id is compound — `provider:model`, e.g.
 unlock, and `/class` refuses to leave you on a class with no key rather than
 failing later at the relay. A BYOK turn is **single-shot**: the relay takes no
 `tools` parameter, so the agentic tool loop is off by construction, not by
-preference. The two hosts ship the same two classes: the local-endpoint routes
-that used to exist here (Ollama, LM Studio and custom endpoints) have been
-removed from the product.
+preference. Both hosts ship the same three classes: Aegis Cloud, BYOK, and a
+free **Local** class fenced to your own Ollama daemon on loopback — the
+generic custom-endpoint (LM Studio / arbitrary OpenAI- or Anthropic-compatible
+URL) routes that used to exist here were removed from the product for good.
 
-It carries the `aegiscodex-dev` design — palette, welcome art, prompt glyphs and
+It carries the reference design — palette, welcome art, prompt glyphs and
 command vocabulary — pinned by `test/cli-conformance.test.mjs`; `test/cli-render.test.mjs`,
 `test/cli-overlays.test.mjs`, `test/cli-fuzzy.test.mjs` and `test/cli-markdown.test.mjs`
 cover the rest of the surface. Its turns are written once to the scrollback rather
