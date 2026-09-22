@@ -32,11 +32,15 @@
  * 01 is the picker control itself (focused, option list recorded) rather than
  * the open popup — see `pickerPopups` in the report.
  *
- * The class used for the driven turns is `openai-compat` pointed at the stub's
- * loopback origin: that is the one wire class whose tool loop runs in-process
- * (lib/local/engine.js) and therefore the one that can render the approval
- * card at all. The cloud class relays tool_calls but has no approval gate in
- * this build, so the card would be unreachable there.
+ * The class used for the driven turns is `local` pointed at the stub's loopback
+ * origin (a BARE origin — local.js appends `/v1` itself). The approval gate is
+ * not a property of the class: it lives in the in-process tool loop
+ * (lib/local/engine.js) and is reached by any class that keeps tools enabled
+ * (`toolsEnabled = cls !== 'byok' && tools !== false`), so `local` and `aegis`
+ * render the card while `byok` does not. `local` is the target here because it
+ * needs no API key, bills nobody, and is fenced to loopback
+ * (`isLocalEndpoint()`/`remoteRefusal()` in lib/local/local.js) — exactly the
+ * shape a loopback stub wants, with no fake cloud credential to invent.
  *
  * Evidence leaves on stdout as one `SHOTS_EVIDENCE {json}` line; the wrapper
  * verifies the files (PNG signature + IHDR dimensions + freshness) and owns
@@ -79,11 +83,13 @@ app.commandLine.appendSwitch('disable-dev-shm-usage');
 // ---------------------------------------------------------------------------
 // Seed the settings the driven turn needs BEFORE the host boots.
 // ---------------------------------------------------------------------------
-// The stub's own origin is the `openai-compat` base URL, so the lane under
-// test dials 127.0.0.1 and nothing else. Seeding the FILE (rather than the
-// Settings pane) is safe here because lib/settings.js re-reads it on every
-// get(); the local-only endpoint policy (lib/local/endpoints.js) permits this
-// row precisely because the origin is loopback.
+// The stub's own origin is the `local` base URL, so the lane under test dials
+// 127.0.0.1 and nothing else. It is the BARE origin, no trailing `/v1`: local.js
+// does `baseOf(baseURL)` and then fetches `${base}/v1/chat/completions`, so a
+// stored `/v1` would be doubled. Seeding the FILE (rather than the Settings
+// pane) is safe here because lib/settings.js re-reads it on every get(); the
+// loopback-only endpoint policy (isLocalEndpoint/remoteRefusal in
+// lib/local/local.js) permits this row precisely because the origin is loopback.
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
 {
@@ -96,7 +102,7 @@ const settingsPath = path.join(userData, 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(
     settingsPath,
-    JSON.stringify({ ...stored, 'openai-compat': { ...(stored['openai-compat'] || {}), baseURL: `${stubBase}/v1` } }, null, 2),
+    JSON.stringify({ ...stored, local: { ...(stored.local || {}), baseURL: stubBase } }, null, 2),
     { mode: 0o600 }
   );
 }
@@ -261,6 +267,20 @@ const CLASS_OPTIONS = `
   };
 `;
 
+/** The live class + model picker state, for waitFor()'s on-timeout diagnosis
+ *  and for asserting which model the driven turn will actually send. */
+const MODEL_STATE = `
+  var m = document.getElementById('model-select');
+  var f = document.getElementById('model-input');
+  return {
+    cls: (document.getElementById('class-select') || {}).value,
+    modelOptions: m ? Array.prototype.map.call(m.options, function (o) { return o.value; }) : null,
+    modelValue: m ? m.value : null,
+    freeVisible: f ? !f.hidden : null,
+    hint: (document.getElementById('model-hint') || {}).textContent || ''
+  };
+`;
+
 /** 1. The model-class picker. */
 async function capturePicker(win) {
   // Read the real option list the renderer built, and put the control in the
@@ -277,7 +297,7 @@ async function capturePicker(win) {
   );
   check(
     'picker-is-a-real-select-with-the-declared-classes',
-    Array.isArray(focused.classOptions) && focused.classOptions.length >= 4,
+    Array.isArray(focused.classOptions) && focused.classOptions.length >= 3,
     `the renderer built ${JSON.stringify(focused.classOptions)}`
   );
   check('picker-focused', focused.focused === true, `activeElement is not the class select (${focused.focused})`);
@@ -327,29 +347,55 @@ const TRANSCRIPT_STATE = `
 /**
  * 2. A completed answer in the transcript.
  *
- * The prompt is typed into the real composer and submitted through the real
- * submit handler; the answer is streamed by the stub over the same transport
- * stack a live provider would use (openai-compat SSE -> providers.js ->
- * engine.js -> IPC -> preload -> renderer). Nothing about the render path is
- * stubbed.
+ * The class is switched to `local` through the real picker first; that fires
+ * the renderer's own class-change handler, which calls engine.listModels
+ * ('local') — a probe plus an Ollama `/api/tags` read — and only then fills the
+ * model picker. So the model is chosen from the picker the renderer built, not
+ * typed into a field, and the wait below is for the stub's own id to arrive.
+ * The prompt is then typed into the real composer and submitted through the
+ * real submit handler; the answer is streamed by the stub over the same
+ * transport stack a live local daemon would use (local.js SSE -> engine.js ->
+ * IPC -> preload -> renderer). Nothing about the render path is stubbed.
  */
 async function captureAnswer(win) {
   const selected = await js(
     win,
     `
     var sel = document.getElementById('class-select');
-    sel.value = 'openai-compat';
+    sel.value = 'local';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
-    var mi = document.getElementById('model-input');
-    if (mi) {
-      mi.value = 'stub-coder-7b';
-      mi.dispatchEvent(new Event('input', { bubbles: true }));
-      mi.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    return { cls: sel.value, modelInput: mi ? mi.value : null };
+    return { cls: sel.value };
   `
   );
-  check('answer-lane-selected', selected.cls === 'openai-compat', `class picker reports ${JSON.stringify(selected)}`);
+  check('answer-lane-selected', selected.cls === 'local', `class picker reports ${JSON.stringify(selected)}`);
+
+  // The list arrives asynchronously. Wait for the stub's id to be present and
+  // then select it explicitly: relying on the first option would silently drive
+  // whatever the list happened to hold first, which is exactly the kind of
+  // "green but not the thing under test" this harness must avoid.
+  const chosen = await waitFor(
+    () =>
+      js(
+        win,
+        `
+    var m = document.getElementById('model-select');
+    var has = m && Array.prototype.some.call(m.options, function (o) { return o.value === 'stub-coder-7b'; });
+    if (!has) return null;
+    m.value = 'stub-coder-7b';
+    m.dispatchEvent(new Event('change', { bubbles: true }));
+    ${MODEL_STATE}
+  `
+      ),
+    'the local model list (stub /api/tags) to reach the renderer',
+    30000,
+    200,
+    () => js(win, MODEL_STATE)
+  );
+  check(
+    'answer-model-selected',
+    chosen.modelValue === 'stub-coder-7b' && chosen.freeVisible === false,
+    `model picker reports ${JSON.stringify(chosen)} — without the picker populated the turn sends no model`
+  );
   await sleep(1200);
 
   const submitted = await js(

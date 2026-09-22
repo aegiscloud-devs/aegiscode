@@ -251,6 +251,7 @@ Three layers, from broadest to narrowest. You only need the first one.
 /class            # show the picker
 /class aegis      # pooled AEGIS Cloud (the default)
 /class byok       # your own provider key, relayed by AEGIS
+/class local      # a model on your own machine or network (free)
 ```
 
 A class is *whose credential pays and who talks to the vendor*, not a model.
@@ -262,6 +263,15 @@ restart.
 |---|---|---|
 | `aegis` *(default)* | the AEGIS pool — one id, `nexus-brain` (alias `aegis-brain`), auto-routed server-side across whichever providers are live | your AEGIS account balance |
 | `byok` | your provider key, relayed via `POST /api/v1/byok/chat/completions` | your provider direct, **plus** a small AEGIS handling fee on your account |
+| `local` | a model on your own machine or network — your Ollama daemon at `http://localhost:11434` by default, keyless; any OpenAI-compatible server on that box works | nobody — free; there is no vendor to bill |
+
+`local` never leaves your own network: it dials a model on your machine or your
+LAN, and is refused fail-closed if the endpoint is not local — the check runs
+when the base URL is saved and again before a request is dialled
+(`desktop/lib/local/local.js` → `remoteRefusal`). The generic *remote*
+custom-endpoint lanes (an arbitrary remote OpenAI- or Anthropic-compatible URL)
+do not exist here; any OpenAI-compatible server on that box — llama.cpp, LM
+Studio, vLLM — works by pointing the base URL at it.
 
 **2. The model id — what to pin.**
 
