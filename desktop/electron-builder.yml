@@ -14,6 +14,22 @@ directories:
   output: release
   buildResources: build
 
+# Real AEGIS brand icon (shared with ae-guix's icons/ set), not the placeholder
+# ring scripts/generate-icon.mjs used to produce. electron-builder picks these
+# up by convention from buildResources (build/icon.icns, build/icon.ico,
+# build/icons/*.png) for the installer/bundle icon on each platform; the
+# extraResources block below additionally ships icon.icns/icon.ico/icon.png
+# into the packaged app's resources dir so main.js can set the *running*
+# window/taskbar icon too, not just the installer's — same split ae-guix uses
+# (lib/windows.js's ICONS_DIR / getIcon()).
+extraResources:
+  - from: build/icon.icns
+    to: icons/icon.icns
+  - from: build/icon.ico
+    to: icons/icon.ico
+  - from: build/icon.png
+    to: icons/icon.png
+
 files:
   - main.js
   - preload.js
@@ -47,6 +63,7 @@ publish:
   repo: aegiscode-plugin
 
 mac:
+  icon: build/icon.icns
   category: public.app-category.productivity
   # zip is required alongside dmg: Squirrel.Mac (electron-updater's mac
   # updater) downloads the app as a zip, not the dmg — dmg is install-only.
@@ -61,6 +78,7 @@ mac:
   # never a crash (see main.js autoUpdater error handling).
 
 win:
+  icon: build/icon.ico
   # Both Windows targets: NSIS .exe (interactive install) and MSI (managed /
   # group-policy deployment). electron-builder builds the MSI with its bundled
   # WiX toolset on the windows-latest runner — no extra setup step.
@@ -79,6 +97,7 @@ msi:
 
 linux:
   target: AppImage
+  icon: build/icons
   category: Utility
   synopsis: Thin Electron host for AEGIS Cloud
   maintainer: AEGIS Code <nborneklint@gmail.com>
@@ -88,3 +107,6 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico

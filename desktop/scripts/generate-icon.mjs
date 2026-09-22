@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * Generates desktop/build/icon.png — a placeholder AEGIS mark (dark tile with
- * a violet ring + core) written as a dependency-free 1024x1024 PNG.
- * electron-builder derives .icns/.ico from this file automatically.
- *
- * Replace with the final brand artwork before the first tagged release:
- *   desktop/build/icon.png  (>= 512x512)
+ * SUPERSEDED — do not run this against a real release. It regenerates
+ * desktop/build/icon.png as a placeholder violet-ring mark, which would
+ * overwrite the real AEGIS brand icon (icon.icns/icon.ico/icon.png/icons/*)
+ * copied in from ae-guix's icon set. Kept only as a reference for how the
+ * placeholder was produced before real artwork existed.
  */
 import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';

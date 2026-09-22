@@ -480,6 +480,22 @@ async function importForeignMemory(aegis, dir, payload) {
   };
 }
 
+/** Where the packaged/dev build keeps its icon files. Packaged: shipped via
+ *  electron-builder.yml's `extraResources` into resourcesPath/icons/ (icons
+ *  live outside asar, since app.icns/.ico aren't otherwise reachable at
+ *  runtime). Dev: read straight from build/, the same source those resources
+ *  are copied from. Same split as ae-guix's lib/windows.js. */
+function resolveIconsDir(isPackaged, resourcesPath, dirname) {
+  return isPackaged ? path.join(resourcesPath, 'icons') : path.join(dirname, 'build');
+}
+
+/** icon.icns on mac, icon.ico on Windows, icon.png everywhere else (Linux). */
+function iconForPlatform(iconsDir, platform) {
+  if (platform === 'darwin') return path.join(iconsDir, 'icon.icns');
+  if (platform === 'win32') return path.join(iconsDir, 'icon.ico');
+  return path.join(iconsDir, 'icon.png');
+}
+
 /** Only http/https may be opened externally — file://, javascript:, etc.
  *  would hand the OS shell an arbitrary URI straight from model output. */
 function isSafeExternalUrl(url) {
@@ -2421,6 +2437,7 @@ function bootstrap() {
       minimizable: false,
       maximizable: false,
       backgroundColor: '#0d1117',
+      icon: iconForPlatform(resolveIconsDir(app.isPackaged, process.resourcesPath, __dirname), process.platform),
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
@@ -2595,6 +2612,7 @@ function bootstrap() {
     // connected display — that's a window that "opens" but nobody can see
     // or reach.
     const bounds = windowState.clampToDisplay(saved, screen.getAllDisplays(), defaultBounds);
+    const iconsDir = resolveIconsDir(app.isPackaged, process.resourcesPath, __dirname);
 
     const win = new BrowserWindow({
       ...bounds,
@@ -2602,6 +2620,7 @@ function bootstrap() {
       minHeight: 480,
       backgroundColor: '#0d1117',
       title: 'AEGIS Desktop',
+      icon: iconForPlatform(iconsDir, process.platform),
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
