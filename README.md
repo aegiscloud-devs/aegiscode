@@ -204,6 +204,8 @@ than into a full-screen TUI, so its output stays pipeable.
 
 ## AEGIS Desktop (Electron)
 
+![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](desktop/docs/demo.gif)
+
 A standalone chat app over the same transport, with an **agentic tool loop**:
 the model can read, write, and edit files, list directories, glob, grep, run
 shell commands in a persistent session, and delegate whole sub-tasks to
@@ -236,12 +238,22 @@ shortcuts and deep-link reference: [`desktop/README.md`](desktop/README.md).
 
 ### Model classes
 
-Pick either of two routes from the model-class picker:
+Pick from three routes on the model-class picker, switchable mid-conversation
+with context intact:
 
-| Class | Transport | Key held in |
-|---|---|---|
-| **Aegis Cloud** | `aegiscloud.org` (pooled or pinned model) | main process |
-| **Bring your own key** (BYOK) | your provider key, relayed by AEGIS | main process — never sent to the renderer |
+| Class | Transport | Key held in | Billed? |
+|---|---|---|---|
+| **Aegis Cloud** | `aegiscloud.org` — one entry, the pool auto-routed across whichever providers are live | main process | yes — pooled margin |
+| **Bring your own key** (BYOK) | your provider key, relayed by AEGIS | main process — never sent to the renderer | yes — flat AEGIS handling fee |
+| **Local** | a model on your own machine or your own network — your Ollama daemon at `localhost:11434` by default | n/a — no key | no — free, no AEGIS account needed |
+
+**Local** fails closed: the endpoint check (`desktop/lib/local/local.js`)
+refuses anything public, run both when the base URL is saved and again before a
+request is dialled — so your own Ollama daemon, or any OpenAI-compatible server
+on that box (llama.cpp, LM Studio, vLLM) via base URL, works, and a hosted
+endpoint does not. What stays removed for good is the generic *remote*
+direct-dial route to hosted providers; those are reachable only through BYOK,
+which bills the handling fee. Full detail: [`desktop/README.md`](desktop/README.md).
 
 Conversations persist locally to `~/.aegiscode/sessions.json` — the same file
 the CLI and the MCP plugin read, so a thread typed in the terminal shows up in
