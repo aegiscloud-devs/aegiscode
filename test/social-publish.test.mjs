@@ -480,7 +480,11 @@ test('only the verdict column counts — a PASS row whose evidence mentions a pa
 
 test('check exits DARK (4), not OK, when no channel has credentials — and reports the closed gate', async () => {
   const out = collector();
-  const code = await commandCheck({ env: {}, home: mkRepo(), repoRoot: REPO, write: out.write });
+  // A synthetic closed-gate fixture, not the live repo: the real gate flipped
+  // OPEN when v0.8.1 was actually published (docs/launch-readiness.md A7/E4),
+  // so pinning this to REPO would make the test's pass/fail track a real
+  // release instead of the CLI's own refusal logic.
+  const code = await commandCheck({ env: {}, home: mkRepo(), repoRoot: mkRepo({ readiness: FAIL_INDEX }), write: out.write });
   assert.equal(code, EXIT.DARK, 'zero live channels means "nothing can be published yet", not "the report printed"');
   assert.match(out.text(), /launch gate: {6}CLOSED/);
   assert.match(out.text(), /Fail-closed/);
@@ -517,7 +521,9 @@ test('usage: no subcommand, an unknown subcommand, and a bad --channel', async (
 
 test('plan reports every item as refused while the gate is closed, and makes no network call', async () => {
   const out = collector();
-  const code = commandPlan({ env: {}, home: mkRepo(), repoRoot: REPO, write: out.write, now: new Date('2026-09-23T00:00:00Z') });
+  // Same reasoning as the check test above: a synthetic closed gate over the
+  // real campaign copy, not the live (now-OPEN) repo gate.
+  const code = commandPlan({ env: {}, home: mkRepo(), repoRoot: campaignRepo({ readiness: FAIL_INDEX }), write: out.write, now: new Date('2026-09-23T00:00:00Z') });
   assert.equal(code, EXIT.OK);
   assert.match(out.text(), /status: REFUSED/);
   assert.match(out.text(), /launch-gate/);
@@ -564,7 +570,7 @@ test('--live is refused when the plan rules block the post, without touching the
     argv: { channel: 'x' },
     env: X_ENV,
     home: mkRepo(),
-    repoRoot: REPO, // the real gate is CLOSED
+    repoRoot: campaignRepo({ readiness: FAIL_INDEX }), // a synthetic closed gate, not the live (now-OPEN) repo
     write: out.write,
     fetchImpl,
     live: true,
