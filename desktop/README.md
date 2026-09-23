@@ -1,5 +1,7 @@
 # AEGIS Desktop
 
+![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/desktop/docs/demo.gif)
+
 A standalone Electron chat app over the [AEGIS](https://aegiscloud.org) API,
 with an **agentic tool loop**: the model can read, write, and edit files,
 list directories, glob, grep, run shell commands in a persistent session, and
@@ -102,6 +104,26 @@ shows every model but says exactly that, rather than failing opaquely.
 Note that a **BYOK turn is single-shot** — the relay takes no `tools` parameter,
 so the agentic tool loop below is off for these models. Use the **Aegis Cloud**
 class when you want file and shell access.
+
+## Screenshots
+
+Captured from the real app, not mocked up: the stills come from
+`scripts/capture-marketing-shots.mjs` and the demo at the top of this page from
+`scripts/record-demo-gif.mjs`. Both drive the actual renderer against a local
+stub and refuse to publish an asset that fails their assertions.
+
+**The model-class picker** — all three routes, switchable mid-conversation:
+
+![The model-class picker listing Aegis Cloud, Bring your own key, and Local](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/01-model-class-picker.png)
+
+**A completed answer** in the transcript:
+
+![A completed answer in the transcript](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/02-answer-complete.png)
+
+**The tool-call approval card** with a proposed edit — what blocks `exec`,
+`writeFile` and `editFile` until you allow, allow for the session, or deny:
+
+![The tool-call approval card with a proposed edit](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/03-tool-approval-diff.png)
 
 ## Tools available to the model
 
