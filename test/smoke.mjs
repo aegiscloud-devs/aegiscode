@@ -5,11 +5,23 @@
  * required — `tools/list` is served entirely from in-memory tool definitions.
  */
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverPath = join(__dirname, '..', 'mcp', 'server.js');
+
+// The manifests are the release-time source of truth for the version. Reading
+// them here (instead of hardcoding a literal) means real version drift — a
+// bumped server constant that never reached the plugin metadata, or vice versa
+// — fails this smoke test, rather than requiring a manual literal bump.
+const pluginJson = JSON.parse(
+  readFileSync(join(__dirname, '..', '.claude-plugin', 'plugin.json'), 'utf8')
+);
+const marketplaceJson = JSON.parse(
+  readFileSync(join(__dirname, '..', '.claude-plugin', 'marketplace.json'), 'utf8')
+);
 
 const child = spawn(process.execPath, [serverPath], {
   stdio: ['pipe', 'pipe', 'pipe'],
@@ -68,8 +80,16 @@ try {
   assert(init.result && init.result.serverInfo, 'initialize should return serverInfo');
   assert(init.result.serverInfo.name === 'aegis', 'server name should be "aegis"');
   assert(
-    init.result.serverInfo.version === '0.3.1',
-    `server version should be 0.3.1, got ${init.result.serverInfo.version}`
+    typeof pluginJson.version === 'string' && pluginJson.version.length > 0,
+    '.claude-plugin/plugin.json should declare a version'
+  );
+  assert(
+    init.result.serverInfo.version === pluginJson.version,
+    `server version should match .claude-plugin/plugin.json (${pluginJson.version}), got ${init.result.serverInfo.version}`
+  );
+  assert(
+    marketplaceJson.metadata && marketplaceJson.metadata.version === pluginJson.version,
+    `.claude-plugin/marketplace.json metadata.version should match plugin.json (${pluginJson.version}), got ${marketplaceJson.metadata && marketplaceJson.metadata.version}`
   );
 
   // 2. tools/list must expose the public tool surface
