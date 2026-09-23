@@ -87,6 +87,7 @@ jobs:
           # assets on the draft release itself.
           path: |
             desktop/release/*.AppImage
+            desktop/release/*.deb
             desktop/release/*.exe
             desktop/release/*.msi
             desktop/release/*.dmg
