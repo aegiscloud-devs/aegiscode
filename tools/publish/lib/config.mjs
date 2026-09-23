@@ -5,9 +5,10 @@
  *   1. the process environment, or
  *   2. ~/.aegisc/social.json
  *
- * The file is *outside* the repo on purpose. `.gitignore` still carries the
- * path (line ~/.aegisc/) because the natural mistake is to create the file in
- * a working directory and then `git add -A` it.
+ * The file is *outside* the repo on purpose. `.gitignore` carries the relative
+ * forms (`.aegisc/`, `social.json`) for the natural mistake -- creating the file
+ * in a working directory and then `git add -A`-ing it. It cannot ignore the
+ * home path itself, since git never looks outside the repo.
  *
  * A missing file is NOT an error: it is the documented "you have not pasted
  * your credentials yet" state, and `check` reports every channel `dark`. The

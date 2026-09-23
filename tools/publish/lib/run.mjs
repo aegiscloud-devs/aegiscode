@@ -13,7 +13,9 @@
  *      Reddit 9:1, Facebook group warmup)
  *   4  the channel is dark: no credential configured for it (`check` exits 4
  *      when zero channels are live; `post` exits 4 for the one it was asked for)
- *   5  a live request failed, or a live path needs an input it does not have
+ *   5  a live request failed, or a live path needs an input it does not have;
+ *      `check --verify-write` also exits 5 when a write probe proves a live
+ *      channel cannot actually write (403 permissions / 402 billing / 401 auth)
  */
 
 import fs from 'node:fs';
@@ -22,6 +24,7 @@ import { CHANNELS, ConfigError, loadCredentials, secretsFromEnvAndFile } from '.
 import { CHAR_LIMITS, itemsForWeek, loadCopy } from './copy.mjs';
 import { evaluateItem, readLaunchGate } from './gates.mjs';
 import { readLedger } from './ledger.mjs';
+import { estimateItem, estimatePlan, formatUsd } from './rates.mjs';
 import { buildRequests, credentialRequirements, USER_AGENT, xAuthHeaders } from './channels.mjs';
 import {
   charCount,
@@ -42,9 +45,14 @@ export const CONFIG_FILE_DISPLAY = '~/.aegisc/social.json';
 
 const USAGE = `aegis publish — the credential-driven publishing layer for the AEGIS Desktop campaign
 
-  publish check   [--explain] [--verify] [--json]
+  publish check   [--explain] [--verify] [--verify-write] [--json]
       Validate the configured credentials, per channel: live or dark.
       Never prints a secret (masked to the last 4). No network unless --verify.
+      --verify-write (implies --verify) adds one non-destructive POST to X. A GET
+      cannot detect a write-permission failure, so --verify alone can report
+      "LIVE" for an app that cannot write a single byte. The probe body carries
+      no text, so no post can be created: 400 means writable, 403 permissions,
+      402 billing. A failed write probe exits 5.
       Exits 4 when no channel is live — this is the pre-publish readiness probe.
 
   publish plan    [--week N] [--channel x|reddit|facebook|youtube] [--json]
@@ -87,6 +95,66 @@ function credentialLine(values) {
 }
 
 /* ---------------------------------------------------------------- check --- */
+
+/**
+ * Classify the outcome of the non-destructive write probe.
+ *
+ * WHY THIS EXISTS: `check --verify` establishes identity with a GET, and a GET
+ * succeeds on a read-only app. So the report used to say "LIVE" for an app that
+ * could not write a single byte -- which is a false green on the one question
+ * the operator is actually asking before a launch. X answers the two failure
+ * modes at *different stages* depending on the endpoint, so the response has to
+ * be read, not just checked for 2xx:
+ *
+ *   403 oauth1-permissions  the app is not set to Read+Write, or the access
+ *                           token predates that change (portal fix).
+ *   402 credits-depleted    permissions are fine; the account has no credits.
+ *   400                     permissions AND billing are fine -- the probe body
+ *                           is deliberately invalid, so 400 is the success case.
+ */
+export function classifyWriteProbe(status, body) {
+  const snippet = typeof body === 'string' ? body : JSON.stringify(body || {});
+  if (status === 400) {
+    return { ok: true, kind: 'writable', note: 'write permission and billing are both clear (400 is expected: the probe body is invalid on purpose)' };
+  }
+  if (status === 402) {
+    return { ok: false, kind: 'billing', note: 'read+write is active, but X refused at the billing stage — buy API credits' };
+  }
+  if (status === 403 && /oauth1-permissions|not configured with the appropriate/i.test(snippet)) {
+    return { ok: false, kind: 'permissions', note: 'app permission is not Read+Write for this token — set Read+Write, then REGENERATE the access token' };
+  }
+  if (status === 401) return { ok: false, kind: 'auth', note: 'the credential did not authenticate for a write at all' };
+  return { ok: false, kind: 'unknown', note: `unrecognised write outcome (${status})` };
+}
+
+/**
+ * The single write probe, used by `check --verify-write`.
+ *
+ * WHY IT IS SEPARATE FROM `verifyProbes`: that set is GET-only by construction
+ * ("check must never be able to publish"), and that promise is worth keeping --
+ * so the write probe is opt-in behind its own flag and never runs as part of a
+ * plain `check`.
+ *
+ * WHY IT IS SAFE: the body is `{}` with no `text` field. Post creation requires
+ * `text`, so X rejects this request before a post can exist even when
+ * permissions and credits are both fine -- the healthy outcome is a 400. There
+ * is no input to this function that can produce a published post.
+ */
+export function writeProbes(id, values) {
+  if (id !== 'x') return null;
+  const url = 'https://api.x.com/2/tweets';
+  return [
+    {
+      id: 'x-write-scope',
+      label: 'write scope',
+      method: 'POST',
+      url,
+      headers: xAuthHeaders(values, { method: 'POST', url }),
+      bodyType: 'json',
+      body: {},
+    },
+  ];
+}
 
 /**
  * Read-only identity probes used by `check --verify`. GET-only by construction:
@@ -191,15 +259,28 @@ export async function commandCheck({
   write,
   fetchImpl = fetch,
   verify = false,
+  writeVerify = false,
   explain = false,
   json = false,
 }) {
+  // `--verify-write` implies `--verify`: probing write scope without first
+  // establishing identity would report a failure that is really just a bad
+  // credential, and the read-only result is the context that makes the write
+  // verdict readable. A plain `check` stays GET-only by construction.
+  const doVerify = verify || writeVerify;
   const creds = loadCredentials({ env, home });
   const secrets = secretsFromEnvAndFile({ env, home });
   const gate = readLaunchGate({ repoRoot });
   const lines = [];
+  const writeResults = [];
+  let writeFailed = false;
 
-  lines.push(`aegis publish — check (credentials + launch gate${verify ? '; --verify contacts each API with read-only calls' : '; no network'})`);
+  const verifyLabel = writeVerify
+    ? '; --verify-write contacts each API with read-only calls, then probes X write scope with one non-destructive POST'
+    : doVerify
+      ? '; --verify contacts each API with read-only calls'
+      : '; no network';
+  lines.push(`aegis publish — check (credentials + launch gate${verifyLabel})`);
   lines.push('');
   lines.push(`credential store: ${creds.path}${creds.filePresent ? '' : '  (not present — env only, which is a valid setup)'}`);
   lines.push(`launch gate:      ${gate.open ? 'OPEN' : 'CLOSED'} — ${gate.reason}`);
@@ -236,7 +317,7 @@ export async function commandCheck({
       (liveCount === 0 ? ' — nothing can be published yet (exit 4).' : ' — the launch gate below still gates posting.'),
   );
 
-  if (verify) {
+  if (doVerify) {
     lines.push('');
     lines.push('read-only verification:');
     for (const id of Object.keys(CHANNELS)) {
@@ -266,6 +347,44 @@ export async function commandCheck({
     if (gate.open === false) lines.push('  note: the launch gate being CLOSED does not make a credential invalid; it blocks posting.');
   }
 
+  // Opt-in write probe. A 2xx GET proved identity; it did NOT prove the app may
+  // write. Only run behind the explicit flag so a plain `check` can never POST.
+  if (writeVerify) {
+    lines.push('');
+    lines.push('write-scope verification (non-destructive POST; body carries no text, so no post can be created):');
+    for (const id of Object.keys(CHANNELS)) {
+      const ch = creds.channels[id];
+      const probes = ch.live ? writeProbes(id, ch.values) : null;
+      if (!ch.live) {
+        lines.push(`  ${pad(id, 10)}skipped — dark`);
+        continue;
+      }
+      if (!probes) {
+        lines.push(`  ${pad(id, 10)}skipped — no write probe wired for this channel`);
+        continue;
+      }
+      const vars = new Map();
+      for (const probe of probes) {
+        let verdict;
+        try {
+          const result = await sendRequest(probe, { fetchImpl, vars });
+          verdict = classifyWriteProbe(result.status, result.snippet);
+          const blocker = verdict.kind === 'permissions' || verdict.kind === 'billing';
+          const tag = blocker ? `BLOCKER ${verdict.kind.toUpperCase()}` : verdict.ok ? 'ok' : verdict.kind;
+          lines.push(`  ${pad(id, 10)}${probe.label}: ${result.status} ${tag} — ${verdict.note}`);
+          if (!verdict.ok) lines.push(`  ${pad('', 10)}response: ${redactText(result.snippet, secrets)}`);
+          if (!verdict.ok) writeFailed = true;
+        } catch (err) {
+          verdict = { ok: false, kind: 'unknown', note: 'the request itself failed' };
+          lines.push(`  ${pad(id, 10)}${probe.label}: FAILED — ${redactText(err.message, secrets)}`);
+          writeFailed = true;
+        }
+        writeResults.push({ channel: id, probe: probe.id, ok: verdict.ok, kind: verdict.kind, note: verdict.note });
+      }
+    }
+    if (writeFailed) lines.push('  result: a live channel cannot actually write — see the BLOCKER line above.');
+  }
+
   if (json) {
     write(
       JSON.stringify(
@@ -275,6 +394,7 @@ export async function commandCheck({
           gate: { open: gate.open, reason: gate.reason },
           liveChannels: channelIds.filter((id) => creds.channels[id].live),
           channels: redact(creds.channels, secrets),
+          ...(writeVerify ? { writeVerification: writeResults } : {}),
         },
         null,
         2,
@@ -283,6 +403,10 @@ export async function commandCheck({
   } else {
     write(lines.join('\n') + '\n');
   }
+  // A failed write probe is a live failure, not a dark channel: the credential
+  // authenticated (so it is not DARK) but the request that actually matters was
+  // refused. 5, per the exit table. Only reachable behind --verify-write.
+  if (writeFailed) return EXIT.LIVE_FAILED;
   // `check` is the readiness probe a script runs before a publish run, so the
   // exit code has to answer the question it was asked: with zero live channels
   // there is nothing to post to, and returning OK would only mean "the report
@@ -353,12 +477,22 @@ export function commandPlan({
   lines.push('');
   lines.push(`${items.length} item(s): ${items.length - refused} ready, ${refused} refused`);
 
+  const cost = estimatePlan(items);
+  lines.push('');
+  lines.push(`estimated API cost: ${formatUsd(cost.totalUsd)} (pay-per-use; not a quote — the Developer Console is authoritative)`);
+  for (const c of cost.byChannel) lines.push(`  ${c.channel.padEnd(9)} ${formatUsd(c.usd).padStart(7)}  — ${c.detail}`);
+  if (cost.notes.length > 0) {
+    lines.push('');
+    for (const n of cost.notes) lines.push(`  ! ${n}`);
+  }
+
   if (json) {
     write(
       JSON.stringify(
         {
           week,
           gate: { open: gate.open, reason: gate.reason },
+          cost,
           items: items.map((i) => ({
             id: i.id,
             channel: i.channel,
@@ -370,6 +504,7 @@ export function commandPlan({
             refusals: i.refusals,
             title: i.title || null,
             media: i.media || null,
+            costUsd: estimateItem(i).usd,
           })),
         },
         null,
@@ -397,6 +532,9 @@ export function renderItem(item, creds) {
   if (item.title) out.push(`  title: ${item.title} (${charCount(item.title)}/${titleLimit(item)})`);
   if (item.media) out.push(`  media: ${item.media}`);
   if (item.commentLink) out.push(`  link goes in the first comment: ${item.commentLink}`);
+  const cost = estimateItem(item);
+  if (cost.usd > 0) out.push(`  cost: ${formatUsd(cost.usd)} — ${cost.detail}`);
+  else if (cost.billable) out.push(`  cost: $0 — ${cost.detail}`);
   out.push(`  where: ${item.planRef}`);
   const req = credentialRequirements(item);
   const live = creds.channels[item.channel]?.live;
@@ -704,6 +842,7 @@ export function parseArgs(argv) {
     if (a === '--live') out.live = true;
     else if (a === '--explain') out.explain = true;
     else if (a === '--verify') out.verify = true;
+    else if (a === '--verify-write') out.writeVerify = true;
     else if (a === '--json') out.json = true;
     else if (a === '--help' || a === '-h') out.help = true;
     else if (a.startsWith('--')) {
@@ -745,7 +884,8 @@ export async function main(argv, { env = process.env, home, repoRoot, write = (s
           repoRoot: root,
           write,
           fetchImpl,
-          verify: Boolean(args.verify),
+          verify: Boolean(args.verify) || Boolean(args.writeVerify),
+          writeVerify: Boolean(args.writeVerify),
           explain: Boolean(args.explain),
           json: Boolean(args.json),
         }),
