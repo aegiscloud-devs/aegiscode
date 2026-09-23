@@ -120,6 +120,51 @@ export function charCount(text) {
   return Array.from(String(text ?? '')).length;
 }
 
+/**
+ * Media markers the copy bank embeds inline — `<GIF>` and the annotated
+ * `<GIF: R3, tool loop + diff card>`. They are instructions to attach an
+ * asset, never publishable text: counting one against a character limit
+ * reports a post as over-length when it is not, and letting one reach a
+ * channel's body publishes the marker itself.
+ *
+ * Deliberately broader than PLACEHOLDER_RE, which matches only a bare
+ * `<lowercase_word>` and so misses the annotated form completely — it contains
+ * a colon, spaces and commas. `<tweet_id>` / `<asset_url>` request placeholders
+ * are unaffected: they are resolved by fillPlaceholders at send time and never
+ * appear in an item's text.
+ */
+export const MEDIA_MARKER_RE = /<(GIF|IMG|IMAGE|VIDEO|SHOT|SCREENSHOT)(?:\s*:[^>]*)?>/gi;
+
+/** Every media marker in a value, as its trimmed inner description. */
+export function extractMediaMarkers(value) {
+  const out = [];
+  const walk = (v) => {
+    if (typeof v === 'string') {
+      for (const m of v.matchAll(MEDIA_MARKER_RE)) out.push(m[0].slice(1, -1).trim());
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item);
+      return;
+    }
+    if (v && typeof v === 'object') {
+      for (const item of Object.values(v)) walk(item);
+    }
+  };
+  walk(value);
+  return out;
+}
+
+/** Remove media markers and close up the whitespace they leave behind. */
+export function stripMediaMarkers(value) {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(MEDIA_MARKER_RE, '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Fill `<name>` placeholders from a vars map. Unresolved ones are left alone. */
 export function fillPlaceholders(value, vars) {
   if (typeof value === 'string') {
@@ -150,4 +195,20 @@ export function placeholderNames(value, out = new Set()) {
     for (const v of Object.values(value)) placeholderNames(v, out);
   }
   return out;
+}
+
+/**
+ * Is this a Facebook *group* post, as opposed to a Page post?
+ *
+ * The surface string has been spelled two ways: `copy.mjs` builds the real
+ * group item as `facebook-group-post` and `channels.mjs` routes group tokens on
+ * that spelling, while `gates.mjs` and `config.mjs` wrote `facebook-group`. A
+ * strict equality test in the gates therefore never matched the item that
+ * actually gets published, which silently skipped §4.4's two-week group warmup
+ * on the only surface it exists to protect. One prefix test, defined once, so
+ * the two spellings cannot diverge again — and a future rename fails *into* the
+ * gate rather than out of it.
+ */
+export function isFacebookGroupSurface(item) {
+  return String((item && item.surface) || '').startsWith('facebook-group');
 }

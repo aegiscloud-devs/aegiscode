@@ -11,7 +11,8 @@
  *   2  the credential store itself is broken (unreadable or invalid JSON)
  *   3  refused by one of the plan's own rules (launch gate, §8 copy rules,
  *      Reddit 9:1, Facebook group warmup)
- *   4  the channel is dark: no credential configured for it
+ *   4  the channel is dark: no credential configured for it (`check` exits 4
+ *      when zero channels are live; `post` exits 4 for the one it was asked for)
  *   5  a live request failed, or a live path needs an input it does not have
  */
 
@@ -24,6 +25,7 @@ import { readLedger } from './ledger.mjs';
 import { buildRequests, credentialRequirements, USER_AGENT, xAuthHeaders } from './channels.mjs';
 import {
   charCount,
+  extractMediaMarkers,
   fillPlaceholders,
   isSecretKey,
   maskSecret,
@@ -31,6 +33,7 @@ import {
   redact,
   redactText,
   repoRootFrom,
+  stripMediaMarkers,
 } from './util.mjs';
 
 export const EXIT = { OK: 0, USAGE: 1, CONFIG: 2, REFUSED: 3, DARK: 4, LIVE_FAILED: 5 };
@@ -42,6 +45,7 @@ const USAGE = `aegis publish — the credential-driven publishing layer for the 
   publish check   [--explain] [--verify] [--json]
       Validate the configured credentials, per channel: live or dark.
       Never prints a secret (masked to the last 4). No network unless --verify.
+      Exits 4 when no channel is live — this is the pre-publish readiness probe.
 
   publish plan    [--week N] [--channel x|reddit|facebook|youtube] [--json]
       Read the week's copy out of the campaign docs and print exactly what
@@ -224,6 +228,14 @@ export async function commandCheck({
     }
   }
 
+  const channelIds = Object.keys(CHANNELS);
+  const liveCount = channelIds.filter((id) => creds.channels[id].live).length;
+  lines.push('');
+  lines.push(
+    `${liveCount} of ${channelIds.length} channel(s) live` +
+      (liveCount === 0 ? ' — nothing can be published yet (exit 4).' : ' — the launch gate below still gates posting.'),
+  );
+
   if (verify) {
     lines.push('');
     lines.push('read-only verification:');
@@ -261,6 +273,7 @@ export async function commandCheck({
           path: creds.path,
           filePresent: creds.filePresent,
           gate: { open: gate.open, reason: gate.reason },
+          liveChannels: channelIds.filter((id) => creds.channels[id].live),
           channels: redact(creds.channels, secrets),
         },
         null,
@@ -270,7 +283,12 @@ export async function commandCheck({
   } else {
     write(lines.join('\n') + '\n');
   }
-  return EXIT.OK;
+  // `check` is the readiness probe a script runs before a publish run, so the
+  // exit code has to answer the question it was asked: with zero live channels
+  // there is nothing to post to, and returning OK would only mean "the report
+  // printed". DARK says "not yet" -- and stays distinct from CONFIG ("broken"),
+  // which is what the exit table promises.
+  return liveCount === 0 ? EXIT.DARK : EXIT.OK;
 }
 
 /* ----------------------------------------------------- gather + plan ------ */
@@ -282,7 +300,20 @@ export function gather({ env = process.env, home, repoRoot, week = 1, channelFil
   const copy = loadCopy({ repoRoot });
   const items = itemsForWeek(copy, week)
     .filter((it) => !channelFilter || it.channel === channelFilter)
-    .map((it) => ({ ...it, ...evaluateItem(it, { gate, ledger, now }) }));
+    .map((it) => {
+      // The copy bank embeds media markers (<GIF>, <GIF: R3, ...>) inline in the
+      // post text. They are attach-this instructions, not text: strip them so
+      // that neither the character count nor a channel's request body can carry
+      // one, and surface what was stripped as the item's media note.
+      const markers = extractMediaMarkers(it.text);
+      const normalized = {
+        ...it,
+        text: stripMediaMarkers(it.text),
+        title: it.title ? stripMediaMarkers(it.title) : it.title,
+        media: it.media || (markers.length ? markers.join('; ') : null),
+      };
+      return { ...normalized, ...evaluateItem(normalized, { gate, ledger, now }) };
+    });
   return { creds, gate, ledger, copy, items, week };
 }
 
@@ -434,8 +465,18 @@ export function commandDryRun({
  * `--media FILE` attaches to the X post that carries the doc's own
  * `<GIF: ...>` placeholder (thread post 3), not to every post in the thread.
  */
+/**
+ * Which media a request carries.
+ *
+ * The GIF request is read from the item's *media note* as well as its text.
+ * `gather` strips the inline `<GIF: R3, ...>` markers out of the publishable
+ * text (they are attach-instructions, not copy) and carries them on `item.media`
+ * instead — so testing the text alone would silently stop attaching the file the
+ * operator passed with `--media`.
+ */
 export function mediaFor(item, media = {}) {
-  if (item.channel === 'x' && media.file && /<gif/i.test(item.text)) {
+  const wantsGif = /<gif/i.test(item.text || '') || /\bgif\b/i.test(item.media || '');
+  if (item.channel === 'x' && media.file && wantsGif) {
     return { filePath: media.file, bytes: safeSize(media.file), mediaType: media.mediaType || 'image/gif' };
   }
   if (item.channel === 'youtube' && media.video) return { videoPath: media.video };
