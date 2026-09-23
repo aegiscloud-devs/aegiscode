@@ -1,6 +1,19 @@
 # electron-builder config for the AEGIS Desktop thin host (plan Phase D3).
 # Targets: Windows NSIS .exe + MSI, macOS .dmg, Linux AppImage.
 #
+# DEPENDENCY PLACEMENT (why `electron` is NOT in "dependencies"):
+# electron-builder 25 hard-errors with 'Package "electron" is only allowed in
+# "devDependencies"' whenever the app package.json lists electron under
+# `dependencies` — `checkDependencies()` in app-builder-lib/out/util/
+# packageMetadata.js inspects that object and nothing else, and unlike the
+# sibling `electron-builder` entry it has no env-var escape hatch. That error
+# aborted EVERY packaging run, which is why no `v*` tag after v0.2.0 ever
+# produced a release and the releases page the README points at stayed empty.
+# electron therefore lives in devDependencies (where electron-builder finds the
+# version to download) plus optionalDependencies (because `npm install -g
+# aegis-desktop` — the install path check A6 verifies — only installs production
+# deps, while electron-builder's check only rejects `dependencies`).
+#
 # Hard boundary: the packaged app contains ONLY the thin shell + the staged
 # copy of the shared transport. electron-builder cannot reach outside the app
 # dir, so scripts/predist.mjs copies ../client/aegis.js -> vendor/aegis.js
@@ -96,7 +109,15 @@ msi:
   perMachine: true
 
 linux:
-  target: AppImage
+  # AppImage *and* deb. §6 of the launch plan requires "AppImage + deb at
+  # minimum" for launch day, and A7 fails without the deb — while the AppImage
+  # alone was the only Linux target this config produced. electron-builder
+  # builds both in the same run from this one target list, so there is no
+  # reason to ship less than the plan asks for. The deb needs a maintainer
+  # (set below) or dpkg-deb rejects the control file.
+  target:
+    - AppImage
+    - deb
   icon: build/icons
   category: Utility
   synopsis: Thin Electron host for AEGIS Cloud
