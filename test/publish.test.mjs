@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  EXIT, gather, main, parseArgs, renderRequest, UsageError,
+  classifyWriteProbe, EXIT, gather, main, parseArgs, renderRequest, UsageError, writeProbes,
 } from '../tools/publish/lib/run.mjs';
 import { buildRequests } from '../tools/publish/lib/channels.mjs';
 import { CHAR_LIMITS } from '../tools/publish/lib/copy.mjs';
@@ -313,6 +313,119 @@ test('check exits 4 when the credential file is absent — a valid, documented s
   const { code, text } = await runCli(['check'], { home });
   assert.equal(code, EXIT.DARK);
   assert.match(text, /not present — env only/);
+});
+
+/* --------------------------------------------------------- --verify-write --- */
+
+test('classifyWriteProbe reads each write outcome the way X reports it', () => {
+  // 400 is the *healthy* case: the probe body is deliberately invalid, so X
+  // rejects it before a post can exist -- and reaching that stage proves both
+  // the permission and the billing gates were passed.
+  assert.deepEqual(classifyWriteProbe(400, '{}'), {
+    ok: true, kind: 'writable',
+    note: 'write permission and billing are both clear (400 is expected: the probe body is invalid on purpose)',
+  });
+  assert.equal(classifyWriteProbe(402, '{"title":"depleted"}').kind, 'billing');
+  assert.equal(
+    classifyWriteProbe(403, '{"detail":"Your app is not configured with the appropriate permissions"}').kind,
+    'permissions',
+  );
+  assert.equal(classifyWriteProbe(403, '{"detail":"oauth1-permissions required"}').kind, 'permissions');
+  assert.equal(classifyWriteProbe(401, '{"title":"Unauthorized"}').kind, 'auth');
+  assert.equal(classifyWriteProbe(500, 'boom').kind, 'unknown');
+  assert.equal(classifyWriteProbe(403, '{"title":"Forbidden"}').kind, 'unknown', 'a 403 without the permission wording is not assumed to be permissions');
+  // Every non-writable outcome must be a failure, so a script cannot read it green.
+  for (const [status, body] of [[402, '{}'], [403, 'oauth1-permissions'], [401, '{}'], [500, 'boom']]) {
+    assert.equal(classifyWriteProbe(status, body).ok, false, `${status} must not read as ok`);
+  }
+});
+
+test('writeProbes sends one POST whose body cannot create a post', () => {
+  const probes = writeProbes('x', { bearerToken: 'a'.repeat(30) + 'TAIL' });
+  assert.equal(probes.length, 1);
+  const [probe] = probes;
+  assert.equal(probe.method, 'POST');
+  assert.equal(probe.url, 'https://api.x.com/2/tweets');
+  assert.equal(probe.bodyType, 'json');
+  assert.deepEqual(probe.body, {}, 'the body is empty');
+  // The safety property: post creation requires `text`, so with no `text` field
+  // X must reject this request -- the probe cannot publish anything.
+  assert.ok(!('text' in probe.body), 'the probe body must never carry a text field');
+  assert.match(probe.headers.authorization, /^Bearer /);
+});
+
+test('writeProbes has no probe for a channel that is not X', () => {
+  assert.equal(writeProbes('reddit', { username: 'u', password: 'p' }), null);
+  assert.equal(writeProbes('facebook', { pageAccessToken: 't' }), null);
+});
+
+test('check without --verify-write never issues a POST', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init?.method });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { username: 'aegis' } }) };
+  };
+  const env = { X_BEARER_TOKEN: 'a'.repeat(30) + 'TAIL' };
+
+  // A plain check is offline by construction: no flag, no network at all.
+  const plain = await runCli(['check'], { env, fetchImpl });
+  assert.equal(plain.code, EXIT.OK);
+  assert.equal(calls.length, 0, 'plain check made a network call');
+
+  // --verify adds the read-only GET, still no POST.
+  const verified = await runCli(['check', '--verify'], { env, fetchImpl });
+  assert.equal(verified.code, EXIT.OK);
+  assert.ok(calls.length > 0, '--verify did contact the API');
+  assert.deepEqual(calls.filter((c) => c.method === 'POST'), [], '--verify issued a POST');
+  assert.ok(calls.some((c) => c.url.includes('/2/users/me')), '--verify issued the identity GET');
+});
+
+test('check --verify-write surfaces the permissions blocker and exits 5', async () => {
+  // The false green this whole change exists to kill: the GET succeeds (so
+  // --verify alone says LIVE) on an app that cannot write a byte.
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init?.method });
+    if (init?.method === 'POST') {
+      return {
+        ok: false,
+        status: 403,
+        text: async () => JSON.stringify({ title: 'Forbidden', detail: 'Your app is not configured with the appropriate permissions' }),
+      };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { username: 'aegis' } }) };
+  };
+  const { code, text } = await runCli(['check', '--verify-write'], {
+    env: { X_BEARER_TOKEN: 'a'.repeat(30) + 'TAIL' },
+    fetchImpl,
+  });
+
+  assert.equal(code, EXIT.LIVE_FAILED, 'a proven write failure is exit 5, not a green LIVE');
+  const post = calls.find((c) => c.method === 'POST');
+  assert.ok(post, 'the write probe was sent');
+  assert.equal(post.url, 'https://api.x.com/2/tweets');
+  assert.match(text, /BLOCKER PERMISSIONS/);
+  assert.match(text, /REGENERATE the access token/);
+});
+
+test('check --verify-write reports a writable app (400) as ok and exits 0', async () => {
+  const fetchImpl = async (url, init) => {
+    if (init?.method === 'POST') return { ok: false, status: 400, text: async () => JSON.stringify({ title: 'Invalid Request' }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { username: 'aegis' } }) };
+  };
+  const { code, text } = await runCli(['check', '--verify-write'], {
+    env: { X_BEARER_TOKEN: 'a'.repeat(30) + 'TAIL' },
+    fetchImpl,
+  });
+  assert.equal(code, EXIT.OK);
+  assert.match(text, /write scope: 400 ok/);
+  assert.match(text, /write permission and billing are both clear/);
+});
+
+test('--verify-write implies --verify and is parsed as a boolean flag', () => {
+  const parsed = parseArgs(['check', '--verify-write']);
+  assert.equal(parsed.writeVerify, true);
+  assert.equal(parsed.verify, undefined, 'the value flag --verify is not set by --verify-write itself');
 });
 
 /* -------------------------------------------------------------- rendering --- */

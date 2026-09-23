@@ -3,6 +3,15 @@ node_modules/
 .DS_Store
 .env
 .env.*
+
+# Credential store. The real file lives at ~/.aegisc/social.json, which git never
+# looks at. These are the *relative* forms, for the natural mistake of creating a
+# store inside a working directory and then `git add -A`-ing it. An unignored
+# token in a git index is unrecoverable: deleting the file later does not remove
+# it from history. See tools/publish/lib/config.mjs.
+.aegisc/
+social.json
+*.token
 desktop/node_modules/
 desktop/release/
 desktop/vendor/
