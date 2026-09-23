@@ -194,6 +194,82 @@ assert(
 );
 assert(idleBudgetFor({}, 1234) === 1234, 'a response object without headers keeps the caller budget');
 
+// ── 2b. The two watchdog env knobs ─────────────────────────────────────────
+//
+// The CLI is a host, not a fork (cli/src/deps.js requires this same file), so
+// giving a slow link more room used to require a code edit. Every case below
+// runs AFTER the require() at the top of this file, which is the point: the
+// knobs are read at call time, so a load-time snapshot fails all of them.
+// Each case restores the env, so the order of this file cannot matter.
+
+/** Run `fn` with `name` set to `value` (undefined ⇒ unset), then restore. */
+function withEnv(name, value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, name);
+  const prev = process.env[name];
+  try {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+    return fn();
+  } finally {
+    if (had) process.env[name] = prev;
+    else delete process.env[name];
+  }
+}
+
+const noHeader = { headers: { get: () => null } };
+const fanOut = { headers: { get: () => 'workers=3;effort=high' } };
+
+withEnv('AEGIS_SSE_IDLE_TIMEOUT_MS', '9000', () => {
+  assert(idleBudgetFor(noHeader) === 9000, 'the env knob moves the 60s stream default');
+  assert(
+    idleBudgetFor(noHeader, 1234) === 1234,
+    "a caller's explicit budget still outranks the env default"
+  );
+});
+
+withEnv('AEGIS_BRAIN_IDLE_TIMEOUT_MS', String(40 * 60_000), () => {
+  assert(
+    idleBudgetFor(fanOut, 150) === 40 * 60_000,
+    'the env knob raises the fan-out floor the header clamps a small budget to'
+  );
+  assert(
+    idleBudgetFor(fanOut, 60 * 60_000) === 60 * 60_000,
+    'a caller above the raised floor is still never lowered'
+  );
+});
+
+// The floor has to stay a floor: raising only the base must not raise it.
+withEnv('AEGIS_SSE_IDLE_TIMEOUT_MS', String(40 * 60_000), () => {
+  assert(
+    idleBudgetFor(fanOut) === 40 * 60_000,
+    'a base raised past the fan-out floor is the budget, not the floor'
+  );
+});
+
+// A bad value here is a typo, not a request: 0 would mean "dead before the
+// first byte" and would kill every turn, so it is ignored rather than obeyed.
+// (Deliberately unlike AEGIS_HOST_COOLDOWN_MS=0, where "no cooldown" is coherent.)
+for (const bad of ['0', '-5', 'abc', '']) {
+  for (const [name, probe, expected] of [
+    ['AEGIS_SSE_IDLE_TIMEOUT_MS', noHeader, SSE_IDLE_TIMEOUT_MS],
+    ['AEGIS_BRAIN_IDLE_TIMEOUT_MS', fanOut, BRAIN_IDLE_TIMEOUT_MS],
+  ]) {
+    withEnv(name, bad, () => {
+      assert(
+        idleBudgetFor(probe) === expected,
+        `${name}="${bad}" is ignored in favour of the shipped default`
+      );
+    });
+  }
+}
+
+// Unset means back on the shipped defaults: no residue from the cases above,
+// which is also what proves each `finally` above actually restored.
+assert(
+  idleBudgetFor(noHeader) === SSE_IDLE_TIMEOUT_MS && idleBudgetFor(fanOut) === BRAIN_IDLE_TIMEOUT_MS,
+  'with both knobs unset the shipped defaults are back'
+);
+
 /**
  * One SSE response: an opening chunk, `silenceMs` of nothing, then the answer.
  * `brainHeader` is the server's own signal that this response is a fan-out.

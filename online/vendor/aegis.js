@@ -47,6 +47,25 @@ function envVar(name) {
 }
 
 /**
+ * Read a positive millisecond count from the environment, or 0 for "unset".
+ *
+ * Used only for the two stream watchdogs below. Non-positive and unparseable
+ * values are IGNORED rather than honoured — deliberately not the rule the
+ * engine's host cooldown uses, where `AEGIS_HOST_COOLDOWN_MS=0` meaning "no
+ * cooldown" is a coherent thing to ask for. Here `0` would mean "the stream is
+ * dead before its first byte", which is a typo rather than a preference, and
+ * silently killing every turn is a far worse failure than ignoring a bad
+ * number. A test that genuinely wants a sub-second watchdog passes
+ * `idleTimeoutMs` per call (test/autonomous-mode.test.mjs does exactly that).
+ */
+function envIdleMs(name) {
+  const raw = envVar(name);
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
  * UUID v4 that works everywhere: Web Crypto first (browsers, Node ≥ 19),
  * then Node's CJS crypto module (Node < 19), then a Math.random fallback for
  * sandboxed contexts (e.g. a VM or an opaque browser context) that expose no
@@ -895,9 +914,27 @@ const BRAIN_IDLE_TIMEOUT_MS = 15 * 60_000;
  * that runs the fan-out, so a renamed brain id or a caller that forgot its
  * flag cannot desynchronise the two. A response with no header (an older
  * server, or a single-pass call) keeps the caller's budget or the 60s default.
+ *
+ * ── the two env knobs ───────────────────────────────────────────────────────
+ *
+ * `AEGIS_SSE_IDLE_TIMEOUT_MS` and `AEGIS_BRAIN_IDLE_TIMEOUT_MS` move those two
+ * *defaults* without a code edit: the CLI is a host, not a fork, so before this
+ * the only way to give a slow link more room — or to reproduce a stall against
+ * a fixed wedged server — was to patch the transport. Same escape hatch the
+ * engine gives its host cooldown (`AEGIS_HOST_COOLDOWN_MS`).
+ *
+ * Both are read at CALL time, not at module load, so a host that sets one after
+ * `require()` still gets it, and one that unsets it is back on the shipped
+ * default. A per-call `idleTimeoutMs` still outranks both: an explicit number
+ * from the caller is a decision about *this* request, while the env var is only
+ * a house default. See envIdleMs() for why a bad value is ignored rather than
+ * obeyed.
  */
 function idleBudgetFor(res, requestedMs) {
-  const base = Number(requestedMs) > 0 ? Number(requestedMs) : SSE_IDLE_TIMEOUT_MS;
+  // Caller override -> env knob -> shipped default.
+  const stated = Number(requestedMs);
+  const envDefault = envIdleMs('AEGIS_SSE_IDLE_TIMEOUT_MS');
+  const base = stated > 0 ? stated : envDefault > 0 ? envDefault : SSE_IDLE_TIMEOUT_MS;
   let header = '';
   try {
     const get = res && res.headers && typeof res.headers.get === 'function' ? res.headers.get.bind(res.headers) : null;
@@ -905,7 +942,13 @@ function idleBudgetFor(res, requestedMs) {
   } catch {
     header = ''; // an exotic fetch shim without headers: keep the caller's budget
   }
-  return header && String(header).trim() ? Math.max(base, BRAIN_IDLE_TIMEOUT_MS) : base;
+  // The fan-out floor is tunable for the same reason the base is — and it has
+  // to stay a FLOOR: a server that announced workers=3 is still working, so a
+  // smaller base must not cut it off. Raise both if the server's own
+  // NEXUS_BRAIN_WORKER_TIMEOUT moves (test/autonomous-mode.test.mjs pins the
+  // 600s relationship between them).
+  const brainFloor = envIdleMs('AEGIS_BRAIN_IDLE_TIMEOUT_MS') || BRAIN_IDLE_TIMEOUT_MS;
+  return header && String(header).trim() ? Math.max(base, brainFloor) : base;
 }
 
 const api = { createClient, envVar, randomUUID, DEFAULT_API_BASE, CLIENT_VERSION, idleBudgetFor, SSE_IDLE_TIMEOUT_MS, BRAIN_IDLE_TIMEOUT_MS };
