@@ -26,6 +26,7 @@
  */
 
 import { oauth1Header } from './oauth1.mjs';
+import { isFacebookGroupSurface } from './util.mjs';
 
 export const GRAPH_VERSION = 'v21.0';
 
@@ -219,13 +220,14 @@ export function redditRequests({ item, creds }) {
 /* ------------------------------------------------------------ Facebook ---- */
 
 export function facebookRequests({ item, creds, optional = {} }) {
-  const token = item.surface === 'facebook-group-post' ? optional.userToken : creds.pageAccessToken;
-  const target = item.surface === 'facebook-group-post' ? optional.groupId : creds.pageId;
+  const isGroup = isFacebookGroupSurface(item);
+  const token = isGroup ? optional.userToken : creds.pageAccessToken;
+  const target = isGroup ? optional.groupId : creds.pageId;
 
   const out = [
     {
       id: `${item.id}-feed`,
-      label: item.surface === 'facebook-group-post' ? `group feed post (${item.group})` : 'Page feed post',
+      label: isGroup ? `group feed post (${item.group})` : 'Page feed post',
       method: 'POST',
       url: `${GRAPH}/${target}/feed`,
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -233,7 +235,7 @@ export function facebookRequests({ item, creds, optional = {} }) {
       body: { message: item.text, access_token: token },
       produces: 'post_id',
       extract: (json) => json?.id,
-      note: item.surface === 'facebook-group-post'
+      note: isGroup
         ? 'requires a USER token holding publish_to_groups — a Page token cannot post to a group'
         : 'Page token; the UTM link goes in the first comment (§4.2 link discipline)',
     },
@@ -368,7 +370,7 @@ export function credentialRequirements(item) {
     case 'reddit':
       return { channel: 'reddit', need: 'clientId/clientSecret/username/password (script app)' };
     case 'facebook':
-      return item.surface === 'facebook-group-post'
+      return isFacebookGroupSurface(item)
         ? { channel: 'facebook', need: 'groupId/userToken (FB_GROUP_ID, FB_USER_TOKEN) — a Page token cannot post to a group' }
         : { channel: 'facebook', need: 'pageId/pageAccessToken' };
     case 'youtube':

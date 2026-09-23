@@ -97,14 +97,18 @@ export function readLedger({ repoRoot, fsImpl = fs } = {}) {
   }
   const lines = text.split(/\r?\n/);
 
-  const commentRows = rowsAfterMarker(lines, COMMENT_MARKER) || [];
-  const fbRows = rowsAfterMarker(lines, FB_GROUP_MARKER) || [];
+  // Keep the null from `rowsAfterMarker` intact: `found` reports whether the
+  // marker exists at all, which is a different fact from "the table is empty".
+  // Coalescing to `[]` here made `found.comments` unconditionally true, so the
+  // one signal that says "this instrument is unreadable" could never fire.
+  const commentRows = rowsAfterMarker(lines, COMMENT_MARKER);
+  const fbRows = rowsAfterMarker(lines, FB_GROUP_MARKER);
 
-  const comments = commentRows
+  const comments = (commentRows || [])
     .map((cells) => ({ date: cells[0] || '', subreddit: normalizeSubreddit(cells[1] || ''), note: cells[2] || '' }))
     .filter((r) => r.subreddit && !EMPTY_CELL_RE.test(r.subreddit));
 
-  const fbGroups = fbRows
+  const fbGroups = (fbRows || [])
     .map((cells) => ({ group: normalizeGroup(cells[0] || ''), joined: cells[1] || '', note: cells[2] || '' }))
     .filter((r) => r.group && !EMPTY_CELL_RE.test(r.group));
 

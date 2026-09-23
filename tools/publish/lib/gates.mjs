@@ -35,6 +35,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { commentCredits, groupParticipation, normalizeGroup } from './ledger.mjs';
+import { isFacebookGroupSurface } from './util.mjs';
+
+export { isFacebookGroupSurface };
 
 export const READINESS_RELATIVE_PATH = 'docs/launch-readiness.md';
 
@@ -184,7 +187,7 @@ export function disclosureViolation(item) {
     }
     return null;
   }
-  if (item.surface === 'facebook-group') {
+  if (isFacebookGroupSurface(item)) {
     if (!/I built this/i.test(firstLines)) {
       return '§4.4: a group post opens with the disclosure line ("Disclosure: I built this...") before anything else';
     }
@@ -241,7 +244,7 @@ export const FB_GROUP_WARMUP_DAYS = 14;
 
 /** §4.4. */
 export function checkFacebookGroupRule({ item, ledger, now = new Date(), warmupDays = FB_GROUP_WARMUP_DAYS }) {
-  if (item.surface !== 'facebook-group') return { ok: true };
+  if (!isFacebookGroupSurface(item)) return { ok: true };
   const group = item.group || '';
   const row = groupParticipation(ledger, group);
   if (!row) {
