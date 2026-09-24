@@ -217,6 +217,72 @@ const plain = (lines) => screen.stripAnsi(text(lines));
     }
   }
 
+  // ── the block has to reach a real 80×24 screen, unclipped ────────────────
+  // `welcomeLines` is pure, so the row budget of the commonest terminal there
+  // is can be proven without a pty — and nothing else would catch it: paint()
+  // walks rows 0..rows-1 and DROPS any line past the end of the frame, so a
+  // block that overran the screen would vanish silently rather than look
+  // broken. The block adds two rows *and* is drawn last, immediately above the
+  // footer hint, which makes it the thing most able to push the hint off the
+  // bottom. Hence: the screen fits, both connect rows are inside the frame on
+  // one row each (a sheared row is missing detail, not just ugly), the footer
+  // is still under them, and the whole thing still fits once the key that
+  // retires it arrives.
+  {
+    const creds = require(join(cliDir, 'src', 'credentials.js'));
+    const real = creds.keyStatus;
+    const COLS = 80;
+    const ROWS = 24;
+    const rowAt = (rendered, needle) => rendered.split('\n').findIndex((r) => r.includes(needle));
+    // The footer hint, quoted exactly as the welcome screen draws it.
+    const FOOTER = 'write a test for <filepath>';
+    const fits = (lines, what) => {
+      // rows-1, not rows: the frame's last row is left free, so no row can ever
+      // depend on paint() not needing to scroll.
+      assert(lines.length <= ROWS - 1,
+        `${what}: ${lines.length} rows must fit 80x24 without filling the last row`);
+      for (const l of lines) {
+        const width = l.reduce((a, sp) => a + sp.w, 0);
+        assert(width <= COLS, `${what}: every row fits 80 cols (row was ${width})`);
+      }
+    };
+    try {
+      // 1. no key on the machine — the block is drawn, in full, in frame.
+      creds.keyStatus = () => ({ configured: false, key: null });
+      assert(screens.connectNeeded(), 'a machine with no key needs the connect block');
+      const lines = screens.welcomeLines({ light: false }, COLS, ROWS, true);
+      const rendered = plain(lines);
+      fits(lines, 'with the connect block');
+
+      const idx = screens.CONNECT.map((row) => rowAt(rendered, row));
+      for (let i = 0; i < screens.CONNECT.length; i++) {
+        assert(idx[i] >= 0,
+          `connect row ${i + 1} reaches the 80x24 screen whole (not wrapped or clipped): ${JSON.stringify(screens.CONNECT[i])}`);
+        assert(idx[i] < ROWS, `connect row ${i + 1} is inside the frame (row ${idx[i]} of ${ROWS})`);
+      }
+      assert(idx[0] < idx[1], 'BYOK is offered before AEGIS Cloud');
+      const footer = rowAt(rendered, FOOTER);
+      assert(footer >= 0 && footer < ROWS, `the footer hint survives the block (row ${footer} of ${ROWS})`);
+      assert(footer > idx[1], 'and the block sits above it, not over it');
+    } finally {
+      creds.keyStatus = real;
+    }
+    try {
+      // 2. the key lands — the block retires and the screen still fits, with the
+      //    footer still in the frame (which is where a taller layout would clip).
+      creds.keyStatus = () => ({ configured: true, key: 'aegis_test' });
+      assert(!screens.connectNeeded(), 'a configured key retires the connect block');
+      const configured = screens.welcomeLines({ light: false }, COLS, ROWS, true);
+      const configuredText = plain(configured);
+      fits(configured, 'without the connect block');
+      assert(!configuredText.includes('/byok-key'), 'and not one connect row is still drawn');
+      const footer = rowAt(configuredText, FOOTER);
+      assert(footer >= 0 && footer < ROWS, `the footer hint is still on screen (row ${footer} of ${ROWS})`);
+    } finally {
+      creds.keyStatus = real;
+    }
+  }
+
   // ── the `What's new` box is the patch note, held to the package ──────────
   // It sat four minor versions stale — topping out at v6.3.0 while the package
   // shipped 6.7.3 — because nothing tied it to anything. These assertions are
