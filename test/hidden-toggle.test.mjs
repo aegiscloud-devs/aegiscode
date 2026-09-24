@@ -96,7 +96,18 @@ const { rules: RAW_RULES, atRules: AT_RULES } = topLevelBlocks(CSS);
  * selectors at all; the reduce-motion block only stops animations), and no
  * at-rule may set a `display`.
  */
-const ALLOWED_AT_RULES = [/^@keyframes [\w-]+$/, /^@media \(prefers-reduced-motion: reduce\)$/];
+// `max-width: 720px` was added by the welcome-connect work (3f62b60) and read
+// before it was allowed in: its ONE rule is `.wc-paths { grid-template-columns:
+// 1fr }` — the two connect paths stack instead of sitting side by side. It sets
+// no `display` and touches no toggle, so it is outside what this audit reasons
+// about, and the assertion below (no at-rule may set a display) enforces that
+// rather than this comment. That assertion is the reason this list is a
+// reviewed allowlist: a `display` smuggled into a media query still fails.
+const ALLOWED_AT_RULES = [
+  /^@keyframes [\w-]+$/,
+  /^@media \(prefers-reduced-motion: reduce\)$/,
+  /^@media \(max-width: 720px\)$/,
+];
 assert(
   AT_RULES.every((r) => ALLOWED_AT_RULES.some((re) => re.test(r.prelude))),
   `style.css gained an at-rule this parse does not reason about (${AT_RULES.map((r) => r.prelude).join(', ') || 'none'}) — ` +
