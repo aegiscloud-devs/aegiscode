@@ -57,6 +57,7 @@ const {
 } = require('./config.js');
 const { copyToClipboard } = require('./clipboard.js');
 const { snapshotCheckpoint, listCheckpoints, loadCheckpoint } = require('./checkpoint.js');
+const { signupUrl, goUrl } = require('./signup.js');
 const screens = require('./screens.js');
 const { summarizeTranscript, recapLine } = require('./summarize.js');
 const { sessionAccounting, accountingFromUsage, estimateTokens } = require('./tokens.js');
@@ -258,7 +259,7 @@ function keyPanelLines(c, title = 'AEGIS account key') {
   if (!st.configured) {
     lines.push([span(C.gray, '')]);
     lines.push([span(C.white, '  Set one with /key <api_key>, or press Enter on /key to paste it.')]);
-    lines.push([span(C.gray, '  Free keys: https://aegiscloud.org')]);
+    lines.push([span(C.gray, `  Free key: ${signupUrl('key_status')}`)]);
   }
   if (st.legacyPlaintext) {
     lines.push([span(C.gray, '')]);
@@ -406,7 +407,15 @@ function memoryStatusLines(c) {
   if (st.overQuota) {
     rows.push([span(C.coral, '  writes: paused — the plan’s ceiling is reached, so new memory is not being stored')]);
     rows.push([span(C.green, '  reads:  still work — everything already stored stays readable (/aegis-recall <topic>)')]);
-    rows.push([span(C.gray, '          free room at https://aegiscloud.org/subscribe, or /cloud memory off to stop trying')]);
+    // Two rows, not one. This was a single 92-cell line ending in
+    // "or /cloud memory off to stop trying", and panel rows go through
+    // `padLine()`, which TRUNCATES at `cols` instead of wrapping — so at 80
+    // columns the escape hatch was cut off the end and never rendered. The URL
+    // gets its own row for the same reason: it is the actionable half, and
+    // truncation is survivable in prose and fatal in a URL. The rows are 76 and
+    // 45 cells of 80, both asserted by test/cli-commands.test.mjs.
+    rows.push([span(C.gray, `          free room at ${goUrl('upgrade', 'cloud_quota')}`)]);
+    rows.push([span(C.gray, '          or /cloud memory off to stop trying')]);
   }
   if (gate.enabled && st.pending > 0) {
     rows.push([span(C.gray, `  pending: ${st.pending} session(s) waiting to sync`)]);
@@ -843,7 +852,7 @@ const COMMANDS = [
               : // The key travels in the environment only (client/aegis.js reads
                 // AEGIS_API_KEY); /login is an unavailable command here, so
                 // pointing at it would send the user to a refusal.
-                'No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free at https://aegiscloud.org), then retry /model.');
+                `No API key set, so the model catalog cannot be read — export AEGIS_API_KEY (free key: ${signupUrl('model_blocked')}), then retry /model.`);
           c.render();
           return true;
         }
@@ -1151,7 +1160,7 @@ const COMMANDS = [
         ks.configured,
         ks.configured
           ? `${maskKey(ks.key)} via ${credentials.sourceLabel(ks.source)}`
-          : `not set — ${credentials.HOW_TO_SET} (free at https://aegiscloud.org)`
+          : `not set — ${credentials.HOW_TO_SET} (free key: ${signupUrl('doctor')})`
       );
       ok('credentials', true, `${ks.path}${ks.fileMode ? ` (${ks.fileMode})` : ''}`);
       ok('cloud memory', ks.memoryToken, ks.memoryToken ? 'token held' : 'no memory token — /cloud activate');
@@ -1710,7 +1719,11 @@ const COMMANDS = [
         credentials.clearMemoryToken();
         c.client.setApiKey(c.client.apiKey);
         note(c, 'cloud memory token cleared locally — sync stops until /cloud activate re-issues one');
-        note(c, 'the account itself is still subscribed; manage the subscription at https://aegiscloud.org/subscribe');
+        // The URL rides its own note: `note` rows are a single unwrapped span
+        // (chatflow.js), so appending it to that sentence would push the tail
+        // past `cols` where `padLine()` cuts it — and the tail is the URL.
+        note(c, 'the account itself is still subscribed; manage the subscription here:');
+        note(c, goUrl('upgrade', 'cloud_deactivate'));
         c.render();
         return true;
       }

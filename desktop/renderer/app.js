@@ -193,7 +193,24 @@ const LOCAL_DEFAULT_BASE = 'http://localhost:11434';
 // and the catalog is key-gated, so this is the first thing a new install needs;
 // it lives here rather than inline so the Model hint and any future "connect"
 // affordance cannot drift to two different pages.
-const GET_AEGIS_KEY_URL = 'https://aegiscloud.org';
+// The short deep link, not the homepage. `/key` is an aegis1 route that
+// expands server-side into the register panel plus the page that shows the
+// key, with the channel UTMs attached:
+//
+//   https://aegiscloud.org/key?s=desktop&c=key_prompt
+//     -> /login?next=%2Fapi-keys&utm_source=desktop&utm_medium=app&utm_campaign=key_prompt#register
+//
+// The bare homepage was the bug: no register panel, no route to the key page,
+// and no UTM, so the click was filed as 'direct' and the most intent-rich
+// moment in a fresh install was unattributable. `s=desktop` must stay on
+// aegis1's SIGNUP_SOURCES or this channel reads as dead in the funnel.
+// KEEP IN SYNC with the CLI's twin (cli/src/signup.js, SIGNUP_SOURCE) —
+// desktop/test/renderer-key-link.test.mjs fails if the two diverge.
+const GET_AEGIS_KEY_URL = 'https://aegiscloud.org/key?s=desktop&c=key_prompt';
+// Where an upgrade prompt sends someone when the server supplies no
+// upgradeUrl of its own. Tagged for the same reason as the line above: a bare
+// /subscribe click cannot be credited to the desktop app.
+const AEGIS_SUBSCRIBE_URL = 'https://aegiscloud.org/subscribe?utm_source=desktop&utm_medium=app';
 
 let pendingEl = null;
 let pendingSessionId = null;
@@ -588,13 +605,26 @@ function setConn(ok, text) {
  *  trip on a guaranteed 401 (aegis1 login_required). */
 let keyConfigured = null;
 
+/** True when the user has configured a route of their own — a BYOK provider
+ *  key or a local model base URL — as reported by the main process
+ *  (main.js providerRouteConfigured(), shipped in the status payload as
+ *  `providerConfigured`). This is NOT the same fact as keyConfigured: BYOK
+ *  keys go to the provider-settings store and never touch aegis.apiKey, so
+ *  without this the connect block kept pitching "Bring your own key" at the
+ *  person who had just brought one. Defaults to false so an unknown state
+ *  keeps the block visible, the same fail-toward-showing-it bias the main
+ *  process and the CLI both document. */
+let providerConfigured = false;
+
 function renderStatus(s) {
   if (!s) {
     keyConfigured = null;
+    providerConfigured = false;
     setConn(false, 'IPC unavailable');
     return;
   }
   keyConfigured = Boolean(s.keyConfigured);
+  providerConfigured = Boolean(s.providerConfigured);
   els.app.textContent = s.appVersion ? `v${s.appVersion}` : '–';
   els.client.textContent = s.clientVersion || '–';
   els.base.textContent = s.apiBase || '–';
@@ -724,7 +754,7 @@ function renderBillingError(res, kind) {
     // wipe it, and an href left in text is not clickable.
     els.billingHint.textContent = `free plan cap reached — ${what} lifts it. `;
     const a = document.createElement('a');
-    a.href = res.upgrade.url || 'https://aegiscloud.org/subscribe';
+    a.href = res.upgrade.url || AEGIS_SUBSCRIBE_URL;
     a.target = '_blank';
     a.rel = 'noreferrer noopener';
     a.textContent = 'See plans →';
@@ -1401,7 +1431,7 @@ async function fetchMemory(query, limit) {
         entries: [],
         error: '',
         upgrade: {
-          url: (err.data && err.data.upgradeUrl) || 'https://aegiscloud.org/subscribe',
+          url: (err.data && err.data.upgradeUrl) || AEGIS_SUBSCRIBE_URL,
           used: err.data && (err.data.tokensUsed != null ? err.data.tokensUsed : err.data.sessionsUsed),
           limit: err.data && (err.data.tokenLimit != null ? err.data.tokenLimit : err.data.freeSessionLimit),
         },
@@ -1440,7 +1470,7 @@ function capNotice(el, upgrade, prefix, cta) {
     `${prefix || 'sync limit reached'} — ${used} of ${cap} tokens synced. ` +
     'Nothing was lost. ';
   const a = document.createElement('a');
-  a.href = upgrade.url || 'https://aegiscloud.org/subscribe';
+  a.href = upgrade.url || AEGIS_SUBSCRIBE_URL;
   a.target = '_blank';
   a.rel = 'noreferrer noopener';
   a.textContent = cta || 'Upgrade to keep saving →';
@@ -1459,7 +1489,7 @@ function renderMemoryResults(entries, error, upgrade) {
     const li = document.createElement('li');
     li.className = 'empty mem-side-upgrade';
     const a = document.createElement('a');
-    a.href = upgrade.url || 'https://aegiscloud.org/subscribe';
+    a.href = upgrade.url || AEGIS_SUBSCRIBE_URL;
     a.target = '_blank';
     a.rel = 'noreferrer noopener';
     a.textContent = 'Free plan limit reached — upgrade to read memory →';
@@ -1918,10 +1948,15 @@ function applyWelcomeConnect() {
   } catch {
     /* storage disabled — treat as not dismissed */
   }
+  // Both connect routes retire the block: the AEGIS Cloud key (keyConfigured)
+  // and a provider route of the user's own (providerConfigured — a BYOK key or
+  // a local base URL, which never touch aegis.apiKey). A panel that keeps
+  // advertising "Bring your own key" to someone who already did is a nag.
+  //
   // keyConfigured is null until status is read, so an unknown state keeps the
   // block visible: on a cold boot the user has no key far more often than not,
   // and renderStatus() calls this again the moment the truth arrives.
-  box.hidden = dismissed || keyConfigured === true;
+  box.hidden = dismissed || keyConfigured === true || providerConfigured === true;
 }
 
 /** Scroll a sidebar card into view and mark it, so a welcome click has a

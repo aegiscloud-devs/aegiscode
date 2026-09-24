@@ -300,7 +300,7 @@ const TEMPLATE_ROOT = tplRoots[0];
 // ------------------------------------------------ realms: the shipping code
 
 /** Build a realm holding the real welcome code plus the fakes. */
-function makeRealm({ keyConfigured = null, stored = {}, storage } = {}) {
+function makeRealm({ keyConfigured = null, providerConfigured = null, stored = {}, storage } = {}) {
   const messages = new FakeNode('div'); // els.messages — the transcript host
   const els = {
     messages,
@@ -368,6 +368,7 @@ function makeRealm({ keyConfigured = null, stored = {}, storage } = {}) {
     sliceDecl('WELCOME_DISMISS_KEY'),
     sliceDecl('GET_AEGIS_KEY_URL'),
     sliceDecl('keyConfigured'),
+    sliceDecl('providerConfigured'),
     sliceFunction('applyGreeting'),
     sliceFunction('quickAction'),
     sliceFunction('renderWelcome'),
@@ -387,9 +388,23 @@ function makeRealm({ keyConfigured = null, stored = {}, storage } = {}) {
       `the harness must be able to put keyConfigured in the ${JSON.stringify(v)} state`
     );
   };
-  if (keyConfigured !== null) setKey(keyConfigured);
 
-  return { realm, document, els, stored, store, setKey, messages };
+  /** The BYOK/local route, as main.js ships it in the status payload. Separate
+   *  from setKey on purpose: the bug this pins was the two facts drifting —
+   *  the main process computing providerConfigured and the renderer never
+   *  reading it. */
+  const setProvider = (v) => {
+    vm.runInContext(`providerConfigured = ${JSON.stringify(v)}`, realm);
+    assert(
+      vm.runInContext('providerConfigured', realm) === v,
+      `the harness must be able to put providerConfigured in the ${JSON.stringify(v)} state`
+    );
+  };
+
+  if (keyConfigured !== null) setKey(keyConfigured);
+  if (providerConfigured !== null) setProvider(providerConfigured);
+
+  return { realm, document, els, stored, store, setKey, setProvider, messages };
 }
 
 /** The block as the user would find it: looked up BY ID in the transcript. */
@@ -468,7 +483,63 @@ const HIDDEN = (r, msg) => {
   HIDDEN(r, 'after the status read reports a configured key');
 }
 
-// ======================================= 3. the dismiss flag is READ, not kept
+// ================= 2b. a route of the user's OWN retires the block as well
+//
+// The block pitches two ways to connect. keyConfigured covers only one of them
+// — a BYOK provider key is written to the provider-settings store and never
+// reaches aegis.apiKey — so a user who pasted an OpenAI/Anthropic/DeepSeek key
+// (or pointed the app at a local model server) had keyConfigured stay false and
+// the block kept re-pitching "Bring your own key" at the person who just did.
+// main.js providerRouteConfigured() computes this and ships it as
+// `providerConfigured`; these cases exist because the first cut of that fix
+// shipped the field on the IPC bridge and left the gate reading keyConfigured
+// alone, making it inert while every main-process test stayed green.
+{
+  const r = makeRealm({ keyConfigured: false, providerConfigured: true });
+  r.realm.renderWelcome();
+  HIDDEN(r, 'providerConfigured === true with no AEGIS key (BYOK-only install)');
+}
+
+{
+  const r = makeRealm({ keyConfigured: true, providerConfigured: true });
+  r.realm.renderWelcome();
+  HIDDEN(r, 'both routes configured');
+}
+
+{
+  // A local base URL counts as a route (no key, not the AEGIS key) — the other
+  // way of answering the block.
+  const r = makeRealm({ keyConfigured: false, providerConfigured: true });
+  r.realm.renderWelcome();
+  HIDDEN(r, 'a local-model base URL, no key at all');
+}
+
+{
+  const r = makeRealm({ keyConfigured: false, providerConfigured: false });
+  r.realm.renderWelcome();
+  VISIBLE(r, 'neither route configured — still a fresh install');
+}
+
+// The same late-arrival path as above, on the BYOK field: renderStatus() sets
+// both and re-runs the gate, so a key pasted while the panel is on screen
+// retires it without a reload.
+{
+  const r = makeRealm({});
+  r.realm.renderWelcome();
+  VISIBLE(r, 'status not read yet (providerConfigured defaults false)');
+  r.setProvider(true);
+  r.realm.applyWelcomeConnect();
+  HIDDEN(r, 'after the status read reports a BYOK route');
+}
+
+// A dismiss is a dismiss: the stored flag outranks a route that is configured.
+{
+  const stored = { 'aegis.welcomeConnectDismissed': 'on' };
+  const r = makeRealm({ stored, keyConfigured: false, providerConfigured: true });
+  r.realm.renderWelcome();
+  HIDDEN(r, 'dismissed AND configured stays hidden');
+}
+
 {
   const stored = { 'aegis.welcomeConnectDismissed': 'on' };
   const r = makeRealm({ stored });

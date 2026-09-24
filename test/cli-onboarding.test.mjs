@@ -182,11 +182,15 @@ const plain = (lines) => screen.stripAnsi(text(lines));
     has(withConnect, '/byok-key', 'the welcome screen names the BYOK route');
     has(withConnect, '/key', 'and the AEGIS Cloud route');
     has(withConnect, 'AEGIS Desktop', 'and says what the desktop app is');
-    has(withConnect, 'aegiscloud.org', 'pointing at the real signup host');
+    has(withConnect, '/key?s=cli', 'pointing at the deep link, not the bare homepage');
     // Every command the block advertises must exist, or the welcome screen is
-    // telling a new user about a route they cannot take.
+    // telling a new user about a route they cannot take. URLs are stripped
+    // first: a bare `/\/([a-z…])/` sweep also matches the *segments* of the
+    // signup link (`//aegiscloud`, `/key`), which are not commands, so the
+    // registry check would go red for a reason unrelated to the routes.
     const commands = require(join(cliDir, 'src', 'commands.js'));
-    const named = [...withConnect.matchAll(/\/([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    const named = [...withConnect.replace(/https?:\/\/\S+/g, ' ')
+      .matchAll(/\/([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
     assert(named.includes('byok-key'), `the connect block advertises /byok-key (saw ${named})`);
     for (const name of named) {
       assert(commands.findCommand(name),
@@ -196,9 +200,42 @@ const plain = (lines) => screen.stripAnsi(text(lines));
     has(plain(screens.welcomeLines({ light: false }, 100, 44, false)), '/byok-key',
       'the block is on the "Welcome back!" screen as well, not only the first run');
 
-    // The URL is the one the key screen already uses, not a second one.
-    has(screens.CONNECT.join(' '), 'https://aegiscloud.org'.replace('https://', ''),
-      'the connect copy points at the same host as the key screen');
+    // The welcome screen's link is the shared builder's output — same route,
+    // same channel as the key screen, not a second hand-written URL that can
+    // drift. The old assertion here was host-only (`aegiscloud.org`), which the
+    // bare homepage satisfied just as well as the register panel, so it stayed
+    // green through the whole dead end it was supposed to catch.
+    const signup = require(join(cliDir, 'src', 'signup.js'));
+    const connect = screens.CONNECT.join(' ');
+    has(connect, signup.signupDisplayUrl(),
+      'the connect copy uses the shared signup builder, not a second URL');
+    has(connect, 's=cli', 'filed under the cli channel, or the signup reads as direct');
+
+    // Every connect row must fit its wrap budget on ONE row. Asserted here, per
+    // row, and not only via the row count `fits()` measures below, so the
+    // failure names the row that overran instead of reporting that the screen
+    // grew by one. The row that overruns is the one carrying the signup link,
+    // so the symptom used to be "welcome screen is one row too tall" — a
+    // message that says nothing about the URL that caused it. The budget
+    // mirrors screens.js `wrapped()`: cols - 4 - indent, with indent 1 here.
+    const WRAP_BUDGET = 80 - 4 - 1;
+    for (const row of screens.CONNECT) {
+      assert(screen.w(row) <= WRAP_BUDGET,
+        `connect row fits ${WRAP_BUDGET} cells at 80 cols (was ${screen.w(row)}): ${JSON.stringify(row)}`);
+    }
+    // And the row prints the display form of the same link, not a second URL:
+    // scheme-less because the row is 2 cells too narrow for the `https://` and
+    // wrapping it costs a line the 80x24 screen does not have — but still
+    // carrying `s=cli`, because the channel is what files the signup.
+    has(connect, signup.signupDisplayUrl(),
+      'the welcome row prints the display form of the shared link');
+    assert(!connect.includes('https://'),
+      'and no scheme, which is the whole reason the display form exists');
+    // The screens with room for it keep the real thing — the key screen puts
+    // the link on a row of its own, so the tightening above does not excuse
+    // losing the scheme everywhere.
+    has(plain(screens.keyLines({ light: false }, 80)), signup.signupUrl('key_screen'),
+      'the key screen still prints the full https link, which it has room for');
 
     // And it retires once the account key is on the machine — the desktop host
     // hides its panel on the same condition, and a welcome screen that keeps
