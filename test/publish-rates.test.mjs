@@ -21,6 +21,28 @@ import { gather } from '../tools/publish/lib/run.mjs';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
 
+// The thread's price is a property of the rate card, not of the launch index.
+// `gather` refuses every item while the §6 T-7 gate is closed (gates.mjs), and a
+// refused item costs $0 by design — asserted above, on purpose. So the week-1
+// thread can only be priced as it would go out, with the gate open. That gate is
+// *expected* to flip closed on any manifest bump that lands ahead of its publish
+// (docs/launch-readiness.md §11 did exactly that), and when it does, "cost 0"
+// here would read as a rate regression when nothing about the rates moved.
+//
+// So: the copy still comes from the real campaign docs — that is the point of
+// these cases — but the gate is forced open, and not silently. If a *content*
+// rule (compliance, the reddit link rule, the facebook group rule) refuses an
+// item, that genuinely changes what the thread costs, and this must fail loudly
+// rather than paper over it.
+function week1Thread({ week = 1 } = {}) {
+  const { items } = gather({ repoRoot, week, channelFilter: 'x' });
+  const contentRefusals = items.flatMap((it) =>
+    (it.refusals || []).filter((r) => r.rule !== 'launch-gate').map((r) => `${r.rule}: ${r.detail}`),
+  );
+  assert.deepEqual(contentRefusals, [], 'only the launch gate may refuse the week-1 X thread');
+  return items.map((it) => (it.status === 'refused' ? { ...it, status: 'ready' } : it));
+}
+
 test('a post containing a URL is billed at the link rate, and one without at the plain rate', () => {
   const plain = estimateItem({ channel: 'x', status: 'ready', text: 'no links here at all' });
   assert.equal(plain.usd, X_WRITE_RATES.postCreate);
@@ -74,7 +96,7 @@ test('non-X channels report zero with a stated reason, not a bare zero', () => {
 test('the real week-1 X thread costs $0.275 — five plain posts plus one link post', () => {
   // Derived from the shipping docs, not a fixture. This is the number the plan
   // is actually wrong about, so it is the one worth pinning.
-  const { items } = gather({ repoRoot, week: 1, channelFilter: 'x' });
+  const items = week1Thread();
   assert.equal(items.length, 6);
   const cost = estimatePlan(items);
   assert.equal(cost.totalUsd, 0.275);
@@ -82,7 +104,7 @@ test('the real week-1 X thread costs $0.275 — five plain posts plus one link p
 });
 
 test('a naive flat-rate estimate would under-report the real thread, which is the point', () => {
-  const { items } = gather({ repoRoot, week: 1, channelFilter: 'x' });
+  const items = week1Thread();
   const naive = items.length * X_WRITE_RATES.postCreate;
   const real = estimatePlan(items).totalUsd;
   assert.ok(real > naive * 3, `real ${real} should dwarf naive ${naive}`);
@@ -92,8 +114,7 @@ test('plan notes call out the 402 as a billing state rather than a credential er
   // The observed live failure was HTTP 402 "credits depleted" arriving *after*
   // auth and app-permission passed. Calling that a credential problem sends the
   // operator to regenerate tokens, which fixes nothing.
-  const { items } = gather({ repoRoot, week: 1, channelFilter: 'x' });
-  const notes = estimatePlan(items).notes.join(' ');
+  const notes = estimatePlan(week1Thread()).notes.join(' ');
   assert.match(notes, /402/);
   assert.match(notes, /credits/i);
 });

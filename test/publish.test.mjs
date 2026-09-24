@@ -273,14 +273,14 @@ test('check is a readiness probe: no live channel exits 4, not 0', () => {
   // `publish check && publish post ...` a lie.
   return runCli(['check']).then(({ code, text }) => {
     assert.equal(code, EXIT.DARK);
-    assert.match(text, /0 of 4 channel\(s\) live/);
+    assert.match(text, /0 of 6 channel\(s\) live/);
   });
 });
 
 test('check exits 0 as soon as one channel is live', async () => {
   const { code, text } = await runCli(['check'], { env: { X_BEARER_TOKEN: 'a'.repeat(30) + 'TAIL' } });
   assert.equal(code, EXIT.OK);
-  assert.match(text, /1 of 4 channel\(s\) live/);
+  assert.match(text, /1 of 6 channel\(s\) live/);
 });
 
 test('no secret can appear in check output — text or JSON', async () => {

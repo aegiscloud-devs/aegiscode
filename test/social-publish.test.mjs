@@ -488,7 +488,7 @@ test('check exits DARK (4), not OK, when no channel has credentials — and repo
   assert.equal(code, EXIT.DARK, 'zero live channels means "nothing can be published yet", not "the report printed"');
   assert.match(out.text(), /launch gate: {6}CLOSED/);
   assert.match(out.text(), /Fail-closed/);
-  assert.match(out.text(), /0 of 4 channel\(s\) live/);
+  assert.match(out.text(), /0 of 6 channel\(s\) live/);
 });
 
 test('a closed gate refuses every parsed item, and evaluateItem says which rule did it', () => {
