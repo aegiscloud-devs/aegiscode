@@ -327,7 +327,16 @@ function stubClient(o = {}) {
       const flat = stripAnsi(lines.map((l) => l.map((sp) => sp.t).join('')).join('\n'));
       assert(!flat.includes(KEY), 'the key screen never echoes the key');
       assert(flat.includes('•'.repeat(4)), 'it shows bullets instead');
-      assert(/aegiscloud\.org/.test(flat), 'and says where to get one');
+      // Where to get a key: the deep link, not the bare homepage. This used to
+      // be satisfied by `/aegiscloud\.org/` — which the homepage matched just
+      // as well as the register panel, so the assertion could not tell the two
+      // apart and let the dead end (no register panel, no route to the key
+      // page, signup filed as 'direct') stay green for as long as it existed.
+      assert(flat.includes('/key?s=cli'), 'the key screen hands over the deep link, not the homepage');
+      assert(flat.includes('c=key_screen'),
+        'and names its own campaign, so prompts stay comparable instead of reported as one number');
+      assert(!/https:\/\/aegiscloud\.org\s*$/m.test(flat),
+        'a bare homepage URL is the bug this replaced — it is not offered as the key route');
       fs.rmSync(dir, { recursive: true, force: true });
     })();
   });

@@ -185,7 +185,12 @@ function stubClient(catalog) {
   await app.handleLine('/model');
   const t = text();
   assert(/API key/.test(t), `a keyless client is told the key is what is missing (got ${JSON.stringify(t)})`);
-  assert(/aegiscloud\.org/.test(t), 'and where to get one');
+  // The prompt carries its campaign, not just the host: `c=model_blocked` is
+  // what separates "typed /model with no key" from "read the key screen" in
+  // the funnel. A host-only assertion here would keep passing if the link
+  // regressed to the homepage, which is exactly what it did before.
+  assert(t.includes('/key?s=cli'), `and where to get one, as a deep link (got ${JSON.stringify(t)})`);
+  assert(t.includes('c=model_blocked'), 'with the prompt it came from recorded on the link');
   assert(!app.buildState().models.length, 'and the picker stays empty rather than inventing ids');
 }
 

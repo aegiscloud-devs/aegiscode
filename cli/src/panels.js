@@ -41,6 +41,9 @@
 
 const { span, getSize, lineWidth } = require('./screen.js');
 const { themeOf, BOLD, BOLD_OFF, GLYPH } = require('./theme.js');
+// Pure, like this module (signup.js requires nothing and does no I/O), so the
+// "everything here is assertable from a plain Node test" contract still holds.
+const { goUrl } = require('./signup.js');
 
 const VERSION = require('../package.json').version;
 
@@ -178,8 +181,14 @@ function buildHelp(commands, ctx = {}) {
     out.push([span(t.gray, 'No commands registered.')]);
   }
   out.push([span('', '')]);
+  // 71 cells, and it has to stay under 80. This row was 81: the label already
+  // reads "Shortcuts:", so `? shortcuts` repeated the word — which cost the 10
+  // cells that pushed it one over, and `padLine()` truncates to `cols` rather
+  // than wrapping, so on every 80-column terminal the row rendered as
+  // "Ctrl-D exi". Measured by test/cli-panels.test.mjs, which asserts every
+  // buildHelp row fits the terminal.
   out.push([
-    span(t.gray, 'Shortcuts: '), span(t.white, '?'), span(t.gray, ' shortcuts · '),
+    span(t.gray, 'Shortcuts: '), span(t.white, '?'), span(t.gray, ' · '),
     span(t.white, '/help'), span(t.gray, ' commands · '), span(t.white, '↑↓'), span(t.gray, ' history · '),
     span(t.white, 'Ctrl-L'), span(t.gray, ' clear · '), span(t.white, 'Ctrl-D'), span(t.gray, ' exit'),
   ]);
@@ -866,7 +875,15 @@ function buildBilling(state, ctx = {}) {
   lines.push([span('', '')]);
   lines.push([span(t.white, 'AEGIS pooled inference'), span(t.gray, '  metered against your token bank')]);
   lines.push([span(t.gray, '  AEGIS has no subscription of its own — /cost shows this session\'s spend.')]);
-  lines.push([span(t.gray, '  Top-ups and invoices: https://aegiscloud.org/billing')]);
+  // Was a literal `https://aegiscloud.org/billing`, which has never been a
+  // route on aegis1 — only `/billing/success` is real; the page is `/topup`.
+  // So the one row on the one screen that exists to convert a free user sent
+  // every user who reached it to a 404, and correcting a wrong path needed an
+  // npm release because it was compiled into the client. Now it points at
+  // `/go/topup`, a server-side indirection: the destination can change without
+  // a client release, and the click arrives tagged with the channel. 75 cells
+  // of 80 — measured, because `padLine()` truncates rather than wraps.
+  lines.push([span(t.gray, `  Top-ups and invoices: ${goUrl('topup', 'cost_screen')}`)]);
   return lines;
 }
 

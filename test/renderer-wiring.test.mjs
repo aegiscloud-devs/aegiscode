@@ -315,7 +315,7 @@ assert(
   'the connect hint appends a real anchor to GET_AEGIS_KEY_URL rather than leaving an href in text'
 );
 assert(
-  /const GET_AEGIS_KEY_URL = 'https:\/\/aegiscloud\.org'/.test(appCode),
+  /const GET_AEGIS_KEY_URL = 'https:\/\/aegiscloud\.org\/key\?s=desktop&c=key_prompt'/.test(appCode),
   'the key URL has one definition (no drift to a second page)'
 );
 

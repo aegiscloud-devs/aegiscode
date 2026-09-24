@@ -38,6 +38,7 @@ const render = require('./render.js');
 const { updateConfig, configExists, loadConfig } = require('./config.js');
 const { updateNotice, updateLine } = require('./update.js');
 const credentials = require('./credentials.js');
+const { signupUrl, signupDisplayUrl } = require('./signup.js');
 const { createSettingsStore, isReservedNamespace } = require('./deps.js');
 
 const VERSION = require('../package.json').version;
@@ -93,13 +94,24 @@ const WHATS_NEW = [
  * exactly, one route each, and the desktop line shares the second.
  *
  * Both commands named here are real registry entries — `/byok-key` saves a
- * provider key, `/key` saves the AEGIS account key — and the URL is the same
- * `aegiscloud.org` the key screen and `/cloud` panels already point at. Nothing
- * here is a URL or a command that only exists in this comment.
+ * provider key, `/key` saves the AEGIS account key — and the URL is the shared
+ * signup deep link from signup.js, not a hand-written one: it lands on the
+ * register panel with the key page queued behind it and the channel attached,
+ * which the bare `aegiscloud.org` this row used to print did not. Nothing here
+ * is a URL or a command that only exists in this comment.
  */
 const CONNECT = [
   'Your key, your bill: /byok-key <provider> — or AEGIS Cloud, /key',
-  'AEGIS Desktop: same engine in a window, on your machine — aegiscloud.org',
+  // The scheme-less form, and this is the only link in the CLI that uses it.
+  // The row's copy spends 45 of the 75 cells `wrapped()` allows at 80 columns
+  // (cols - 4 - indent), so `https://aegiscloud.org/key?s=cli` makes the row 77
+  // and wraps — a line the 80x24 screen does not have, because the connect
+  // block sits on row 21 of 23 and the row it pushes out is the footer hint.
+  // `s=cli` is the parameter that files the signup, so it is the scheme that
+  // goes, not the channel: see signup.js `signupDisplayUrl()`. Editing this copy
+  // means re-measuring; test/cli-onboarding.test.mjs fails on the row count if
+  // the row grows past the budget, and names the row that caused it.
+  `AEGIS Desktop: same engine on your machine — ${signupDisplayUrl()}`,
 ];
 
 /** Centre a plain string, returning one span line. Clip first, or a string
@@ -514,7 +526,12 @@ async function showWelcome(ctx, firstRun = true) {
 
 // ── the account key ──────────────────────────────────────────────────────────
 
-const KEY_URL = 'https://aegiscloud.org';
+// The key screen is the highest-intent moment in the CLI: the user pressed
+// Enter on a bare /key, so they have already decided they want an account.
+// The link is the short aegis1 deep link (see signup.js) — it lands on the
+// register panel with the key page queued behind it, which is the round trip
+// that used to be left to the user to figure out from the homepage.
+const KEY_URL = signupUrl('key_screen');
 
 /**
  * The key screen's lines. Pure, so what the user is told is asserted directly.
@@ -530,12 +547,24 @@ function keyLines(ctx, cols, { value = '', error = null, verify = false } = {}) 
   lines.push([span(t.white + BOLD, 'Connect your AEGIS account')]);
   lines.push([span('', '')]);
   for (const l of wrapped(
-    `Paste an API key to use AEGIS Cloud. Get one free at ${KEY_URL}. ` +
-      'It is stored in your user config directory with owner-only permissions, so later launches and scripts pick it up without an export.',
+    'Paste an API key to use AEGIS Cloud. It is stored in your user config ' +
+      'directory with owner-only permissions, so later launches and scripts ' +
+      'pick it up without an export.',
     cols,
     t.white
   )) {
     lines.push(l);
+  }
+  // The link gets its own row whenever it would otherwise run past the edge:
+  // a URL sheared across two lines is not typeable, and this is the one screen
+  // where the user has nothing to copy it out of.
+  lines.push([span('', '')]);
+  const invite = '  No key yet? Free one at ';
+  if (w(invite) + w(KEY_URL) + 2 <= cols) {
+    lines.push([span(t.white, invite), span(t.cyan, KEY_URL)]);
+  } else {
+    lines.push([span(t.white, '  No key yet? Free one:')]);
+    lines.push([span(t.cyan, `  ${KEY_URL}`)]);
   }
   lines.push([span('', '')]);
   lines.push([
