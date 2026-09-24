@@ -79,6 +79,28 @@ const WHATS_NEW = [
   ' /release-notes for more',
 ];
 
+/**
+ * The connect block — the two ways to power this client, plus the one-line
+ * answer to "why would I want the app". Shown under the boxes on the welcome
+ * screen, in place of the desktop host's welcome panel (BYOK + AEGIS Cloud).
+ *
+ * It is two plain rows and not a third box, and the reason is the same row
+ * budget `WHATS_NEW` is held to: at 80×24 the rule, mark, title, tagline and
+ * the Tips/What's-new pair already come to 21 of the 23 usable rows, so a
+ * boxed third panel (three rows minimum, two of them rules) would push the
+ * footer hint off the bottom of the commonest terminal there is. Two rows fit
+ * exactly, one route each, and the desktop line shares the second.
+ *
+ * Both commands named here are real registry entries — `/byok-key` saves a
+ * provider key, `/key` saves the AEGIS account key — and the URL is the same
+ * `aegiscloud.org` the key screen and `/cloud` panels already point at. Nothing
+ * here is a URL or a command that only exists in this comment.
+ */
+const CONNECT = [
+  'Your key, your bill: /byok-key <provider> — or AEGIS Cloud, /key',
+  'AEGIS Desktop: same engine in a window, on your machine — aegiscloud.org',
+];
+
 /** Centre a plain string, returning one span line. Clip first, or a string
  *  wider than the terminal produces a row that wraps and shears the frame. */
 function centered(text, cols, style) {
@@ -312,6 +334,13 @@ function welcomeLines(ctx, cols, rows, firstRun = true) {
 
   lines.push(...boxes(t, cols, rows - lines.length - 4));
   lines.push([span('', '')]);
+  // The connect block, before the footer hint and only while the machine
+  // holds no account key. `wrapped` splits rather than clips, so a narrow
+  // terminal gets four short rows instead of two sheared ones; the height
+  // budget is unaffected at 80×24, where each line still fits on one row.
+  if (connectNeeded()) {
+    for (const text of CONNECT) lines.push(...wrapped(text, cols, t.white, 1));
+  }
   lines.push([span(t.gray, GLYPH.hint), span(t.white, ' Try "write a test for <filepath>"')]);
   while (lines.length < rows - 1) lines.push([span('', '')]);
   return lines;
@@ -411,6 +440,26 @@ function make(style, text) {
     sp.w = w(text);
   }
   return sp;
+}
+
+/**
+ * Whether the welcome screen should still pitch the two connect routes.
+ *
+ * Once an AEGIS account key is on this machine the user has already taken one
+ * of them, and two rows repeating what they just did is nagging, not
+ * onboarding — the same rule the desktop host applies to its welcome panel.
+ *
+ * A read that fails (no credentials file, an unreadable one) resolves to
+ * "show it": the block is exactly what a user with no key needs, and a
+ * failed status read must never be the reason a new install is told nothing
+ * about how to start.
+ */
+function connectNeeded() {
+  try {
+    return !credentials.keyStatus().configured;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -637,6 +686,8 @@ module.exports = {
   PRODUCT,
   TIPS,
   WHATS_NEW,
+  CONNECT,
+  connectNeeded,
   trustLines,
   themePickerLines,
   keyLines,

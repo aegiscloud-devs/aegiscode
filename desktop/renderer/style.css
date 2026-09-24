@@ -1669,6 +1669,12 @@ label {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* The connect block made this panel tall enough to overflow a short window.
+     Without a scroll container the overflow is unreachable, and `center` alone
+     clips the *top* of an overflowing box, so the greeting disappears. `safe`
+     degrades to plain `center` (the previous behaviour) where unsupported. */
+  justify-content: safe center;
+  overflow-y: auto;
   flex: 1;
   gap: 18px;
   text-align: center;
@@ -1757,6 +1763,216 @@ label {
   opacity: 0.55;
   max-width: 460px;
   line-height: 1.6;
+}
+
+/* ------------------------------------------- welcome: the connect block
+   The "why AEGIS Desktop / bring your own key / connect AEGIS Cloud" panel
+   cloned into #messages by renderWelcome(). It is the only surface a new
+   install sees before it has a key, so it carries the two revenue routes:
+   BYOK (provider key relayed, AEGIS handling fee billed) and AEGIS Cloud.
+
+   Deliberately wider and left-aligned against the centred greeting above it:
+   the greeting is a title, this is body copy plus two calls to action, and
+   centred paragraphs at this length are unreadable. */
+.welcome-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 620px;
+  margin-top: 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  text-align: left;
+  animation: wc-in 0.25s ease-out;
+}
+
+/* Required, not cosmetic: `display: flex` above outranks the UA sheet's
+   `[hidden] { display: none }`, so without this the `hidden` attribute the
+   dismiss button and applyWelcomeConnect() rely on would be a silent no-op
+   (same trap already documented for .update-banner and .autonomous-controls). */
+.welcome-connect[hidden] {
+  display: none;
+}
+
+@keyframes wc-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wc-why-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--teal);
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+}
+
+.wc-why-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wc-why-list li {
+  position: relative;
+  padding-left: 17px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text2);
+}
+
+.wc-why-list li::before {
+  content: '✦';
+  position: absolute;
+  left: 0;
+  top: 1px;
+  font-size: 10px;
+  color: var(--text3);
+}
+
+.wc-why-list b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.wc-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.wc-path {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 13px 14px;
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  background: var(--surface2);
+  color: var(--text2);
+  font-family: var(--font-chat);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.wc-path:hover,
+.wc-path:focus-visible {
+  border-color: var(--teal);
+  background: rgba(0, 229, 192, 0.06);
+  outline: none;
+}
+
+.wc-ic {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.wc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+}
+
+.wc-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wc-path:hover .wc-name,
+.wc-path:focus-visible .wc-name {
+  color: var(--teal);
+}
+
+.wc-desc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+.wc-go {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--teal);
+}
+
+.wc-skip {
+  grid-column: 1 / -1;
+  justify-self: center;
+  border: 0;
+  background: none;
+  padding: 2px 8px;
+  font-family: var(--font-chat);
+  font-size: 11px;
+  color: var(--text3);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--border2);
+}
+
+.wc-skip:hover {
+  color: var(--text2);
+}
+
+/* Sidebar cards are ~280px, so side-by-side path cards stop being readable
+   long before the window is narrow. */
+@media (max-width: 720px) {
+  .wc-paths {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ------------------------------------------------ sidebar "landing" flash
+   revealSidebarCard() adds .flash for 1.2s after a welcome click scrolls a
+   settings card into view. The class was being added with no rule behind it,
+   so the click had no visible landing spot at all — this is that rule. Kept
+   element-agnostic: revealSidebarCard falls back to the node itself when it
+   is not inside a .card. */
+.flash {
+  animation: card-flash 1.2s ease-out;
+}
+
+@keyframes card-flash {
+  0% {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px rgba(0, 229, 192, 0.18);
+  }
+  70% {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px rgba(0, 229, 192, 0.1);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-connect {
+    animation: none;
+  }
+  .flash {
+    animation: none;
+    border-color: var(--teal);
+  }
 }
 
 /* ------------------------------------------------- rendered markdown (D?)

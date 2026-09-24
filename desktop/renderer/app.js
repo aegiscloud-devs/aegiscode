@@ -160,6 +160,11 @@ const EFFORT_KEY = 'aegis.effort';
 const LEGACY_EFFORT_KEY = 'aegis.autonomousEffort';
 const AUTONOMOUS_WORKERS_KEY = 'aegis.autonomousWorkers';
 const EXPLORE_KEY = 'aegis.explore';
+// "Don't show this again" on the welcome panel's connect block. Stored here
+// rather than in the settings store because it is a per-machine UI preference,
+// not a credential, and the settings store is what the main process filters and
+// syncs.
+const WELCOME_DISMISS_KEY = 'aegis.welcomeConnectDismissed';
 // "Work autonomously" (pool_brain worker fan-out, aegis1 services/pool_brain.py)
 // is only billable/routable through the pooled AEGIS Cloud class.
 const AUTONOMOUS_CLASS = 'aegis';
@@ -595,6 +600,10 @@ function renderStatus(s) {
   els.base.textContent = s.apiBase || '–';
   els.key.textContent = s.keyConfigured ? s.keyMask : 'not set';
   setConn(s.keyConfigured, s.keyConfigured ? 'key configured' : 'no API key');
+  // A key that arrives while the welcome panel is on screen (pasted, or synced
+  // from the CLI) retires the connect block; with no key it stays. No-ops when
+  // the panel is not mounted.
+  applyWelcomeConnect();
 }
 
 // -------------------------------------------------------------- auto-update
@@ -1858,12 +1867,150 @@ function renderWelcome() {
   for (const btn of els.messages.querySelectorAll('.chat-quick-pill')) {
     btn.addEventListener('click', () => quickAction(btn.dataset.quick || ''));
   }
+  // The connect block's three controls. Bound here (not inline, not at boot)
+  // because they only exist in the cloned panel; CSP `script-src 'self'` would
+  // drop an inline handler anyway.
+  const byok = document.getElementById('welcome-byok');
+  if (byok) byok.addEventListener('click', welcomeByok);
+  const cloud = document.getElementById('welcome-cloud');
+  if (cloud) cloud.addEventListener('click', welcomeCloud);
+  const skip = document.getElementById('welcome-dismiss');
+  if (skip) skip.addEventListener('click', dismissWelcomeConnect);
+  applyWelcomeConnect();
 }
 
 /** Drop the welcome panel once real transcript content exists. */
 function hideWelcome() {
   const w = document.getElementById('chat-welcome');
   if (w) w.remove();
+}
+
+// --------------------------------------------- welcome: the connect block
+//
+// The welcome panel is the only surface a new install sees before it has a
+// key, and it is where the app has to say what it is and how it gets paid for.
+// The block is shown ONLY while nothing is connected (no AEGIS key) and the
+// user has not dismissed it: the panel is re-rendered on every New chat, so an
+// always-on version would be an advert in the composition window.
+//
+// Both routes are real paths into the existing UI, not links out:
+//
+//   byok  — switches the provider class and lands on Provider settings, which
+//           is where the per-provider key rows are built (loadSettings()).
+//           BYOK still needs an AEGIS key for the handling fee (the engine
+//           refuses a keyless BYOK send outright), so when there is none the
+//           same click also focuses the AEGIS key field and says so, rather
+//           than leaving the user at a row whose Save would fail.
+//   cloud — focuses the AEGIS key field in the Status card, where Save/Verify
+//           and the Upgrade/Top up buttons already live. Getting a key is the
+//           one step that happens off-machine, so the hint carries the link
+//           and openExternal is reached through the anchor, never a bare
+//           window.open (CSP `script-src 'self'` drops nothing here, but the
+//           main process is what validates the URL).
+
+/** Show the connect block only on an unconnected, un-dismissed install. */
+function applyWelcomeConnect() {
+  const box = document.getElementById('welcome-connect');
+  if (!box) return;
+  let dismissed = false;
+  try {
+    dismissed = localStorage.getItem(WELCOME_DISMISS_KEY) === 'on';
+  } catch {
+    /* storage disabled — treat as not dismissed */
+  }
+  // keyConfigured is null until status is read, so an unknown state keeps the
+  // block visible: on a cold boot the user has no key far more often than not,
+  // and renderStatus() calls this again the moment the truth arrives.
+  box.hidden = dismissed || keyConfigured === true;
+}
+
+/** Scroll a sidebar card into view and mark it, so a welcome click has a
+ *  visible landing spot. The sidebar is a plain scroll container, so this is
+ *  the whole of the "open settings" affordance. */
+function revealSidebarCard(node) {
+  if (!node) return;
+  const card = node.closest('section.card') || node;
+  try {
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  } catch {
+    card.scrollIntoView();
+  }
+  card.classList.add('flash');
+  setTimeout(() => card.classList.remove('flash'), 1200);
+}
+
+/** "Bring your own key": land the user where a provider key can be typed. */
+async function welcomeByok() {
+  renderWelcomeHint('byok');
+  const hasByok = Array.from(els.classSelect.options).some((o) => o.value === 'byok');
+  if (hasByok && els.classSelect.value !== 'byok') {
+    els.classSelect.value = 'byok';
+    // The change listener persists the class and reloads the catalog, so the
+    // provider rows appear without duplicating any of that here.
+    els.classSelect.dispatchEvent(new Event('change'));
+  }
+  revealSidebarCard(els.settingsList);
+  // A BYOK turn is refused without an AEGIS key (the handling fee is billed
+  // there), so a keyless user is sent to the key field first — the provider row
+  // cannot succeed on its own.
+  if (keyConfigured === false && els.apiKeyHint) {
+    els.apiKeyHint.textContent =
+      'BYOK needs an AEGIS key too — the handling fee is billed to it. ' +
+      'Paste one above, then add your provider key below.';
+  }
+  if (keyConfigured === false && els.apiKeyInput) {
+    els.apiKeyInput.focus();
+    revealSidebarCard(els.apiKeyInput);
+    return;
+  }
+  const row = els.settingsList
+    ? els.settingsList.querySelector('.setting-row input[type="password"]')
+    : null;
+  if (row) row.focus();
+}
+
+/** "Connect AEGIS Cloud": land the user on the key field that unlocks it. */
+function welcomeCloud() {
+  renderWelcomeHint('cloud');
+  revealSidebarCard(els.apiKeyInput);
+  if (els.apiKeyInput) els.apiKeyInput.focus();
+}
+
+/** The hint under the key field, rewritten to match the route just clicked.
+ *  Uses child nodes rather than textContent so the aegiscloud.org link inside
+ *  it survives (same shape as the Model card's needsKey hint). */
+function renderWelcomeHint(kind) {
+  const el = els.apiKeyHint;
+  if (!el) return;
+  el.textContent = '';
+  if (kind === 'byok') {
+    el.appendChild(document.createTextNode(
+      'Bring your own key: paste your AEGIS key here (it bills the handling fee), ' +
+      'then add the provider key in Provider settings. No key yet? ',
+    ));
+  } else {
+    el.appendChild(document.createTextNode(
+      'Connect AEGIS Cloud: paste your AEGIS key, then Save. Free key at ',
+    ));
+  }
+  const a = document.createElement('a');
+  a.href = GET_AEGIS_KEY_URL;
+  a.target = '_blank';
+  a.rel = 'noreferrer noopener';
+  a.textContent = 'aegiscloud.org';
+  el.appendChild(a);
+  el.appendChild(document.createTextNode('.'));
+}
+
+/** Persist "don't show this again" and drop the block for this session. */
+function dismissWelcomeConnect() {
+  try {
+    localStorage.setItem(WELCOME_DISMISS_KEY, 'on');
+  } catch {
+    /* storage disabled — the block simply comes back next launch */
+  }
+  const box = document.getElementById('welcome-connect');
+  if (box) box.hidden = true;
 }
 
 // Assistant text is rendered as sanitized markdown (headings, lists, links,

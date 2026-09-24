@@ -44,6 +44,16 @@ const has = (haystack, needle, msg) =>
 // persisted themeIndex are this test's and not the developer's.
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aegiscode-onboard-'));
 process.env.AEGISCODE_HOME = HOME;
+// Hermetic credentials: scrubbed, not merely redirected. AEGISCODE_HOME moves
+// the credentials *file*, but resolveApiKey() consults the environment before
+// disk (AEGIS_API_KEY wins outright), so on any machine that exports a key —
+// a developer shell, a CI job with a real secret — keyStatus() reported
+// `configured: true` regardless of what this suite did to its temp dir. The
+// connect-block assertions below read that status, so they were pinned to the
+// machine rather than to the code: green here, red in CI, for no change in
+// behaviour. Deleted before any cli module is required, so nothing can
+// snapshot the inherited value at load time.
+delete process.env.AEGIS_API_KEY;
 
 const screens = require(join(cliDir, 'src', 'screens.js'));
 const art = require(join(cliDir, 'src', 'art.js'));
@@ -158,6 +168,52 @@ const plain = (lines) => screen.stripAnsi(text(lines));
     for (const l of screens.welcomeLines({ light: false }, cols, 44, true)) {
       const width = l.reduce((a, sp) => a + sp.w, 0);
       assert(width <= cols, `welcome row fits ${cols} cols (row was ${width})`);
+    }
+  }
+
+  // ── the connect block: BYOK, AEGIS Cloud, and why the desktop exists ─────
+  // The desktop host's welcome panel sells the two routes; the CLI welcome
+  // screen is the same first screen for the same install, so a user who never
+  // opens the app still has to be told both exist. None of it is decoration:
+  // the routes are the only revenue paths, and the commands it names have to
+  // be reachable from the screen that names them.
+  {
+    const withConnect = plain(screens.welcomeLines({ light: false }, 100, 44, true));
+    has(withConnect, '/byok-key', 'the welcome screen names the BYOK route');
+    has(withConnect, '/key', 'and the AEGIS Cloud route');
+    has(withConnect, 'AEGIS Desktop', 'and says what the desktop app is');
+    has(withConnect, 'aegiscloud.org', 'pointing at the real signup host');
+    // Every command the block advertises must exist, or the welcome screen is
+    // telling a new user about a route they cannot take.
+    const commands = require(join(cliDir, 'src', 'commands.js'));
+    const named = [...withConnect.matchAll(/\/([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    assert(named.includes('byok-key'), `the connect block advertises /byok-key (saw ${named})`);
+    for (const name of named) {
+      assert(commands.findCommand(name),
+        `the connect block advertises /${name}, and the registry has it`);
+    }
+    // A returning run gets the routes too: an upgrade does not configure a key.
+    has(plain(screens.welcomeLines({ light: false }, 100, 44, false)), '/byok-key',
+      'the block is on the "Welcome back!" screen as well, not only the first run');
+
+    // The URL is the one the key screen already uses, not a second one.
+    has(screens.CONNECT.join(' '), 'https://aegiscloud.org'.replace('https://', ''),
+      'the connect copy points at the same host as the key screen');
+
+    // And it retires once the account key is on the machine — the desktop host
+    // hides its panel on the same condition, and a welcome screen that keeps
+    // pitching a route the user already took is nagging, not onboarding.
+    const creds = require(join(cliDir, 'src', 'credentials.js'));
+    const real = creds.keyStatus;
+    try {
+      creds.keyStatus = () => ({ configured: true, key: 'aegis_test' });
+      assert(!screens.connectNeeded(), 'a configured key retires the connect block');
+      const configured = plain(screens.welcomeLines({ light: false }, 100, 44, false));
+      assert(!configured.includes('/byok-key'), 'and the rows are gone from the screen');
+      creds.keyStatus = () => { throw new Error('unreadable'); };
+      assert(screens.connectNeeded(), 'an unreadable status still shows the routes');
+    } finally {
+      creds.keyStatus = real;
     }
   }
 
