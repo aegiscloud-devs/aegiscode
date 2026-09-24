@@ -4,6 +4,17 @@ Canonical execution plan for this repo (MCP plugin + Electron desktop host +
 shared thin client). The full product spec lives in `docs/product-plan.md`
 (§4–§10); this file is the reconciler-driven queue of the remaining work.
 
+## Scope — which "the CLI" means
+
+**"The CLI" means `cli/` in THIS repo** (`aegiscode-plugin/cli`, published to npm
+as `aegiscode`). That is the user-facing CLI.
+
+The engine at `/home/neo/aegiscodex-dev` also ships a CLI, but it is the
+**admin/engine** surface — internal tooling, not the product CLI. When a task
+says "the CLI" without qualifying it, it means `cli/` here. Do not apply
+product changes (welcome screen, onboarding, BYOK/Cloud routing) to the engine
+unless the request names the engine explicitly.
+
 A phase is **done** when its heading carries ✅ *and* its line in the Status
 checklist is `[x]`. The first unchecked phase is the next unit of autonomous
 work.

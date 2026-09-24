@@ -215,6 +215,24 @@ const plain = (lines) => screen.stripAnsi(text(lines));
     } finally {
       creds.keyStatus = real;
     }
+
+    // It also retires for a BYOK-only user (no AEGIS account key at all) —
+    // providerRouteConfigured() ported from the desktop host, because
+    // `/byok-key <provider>` writes the identical `byok:<provider>` row into
+    // the same settings.json both hosts share (engine.js's byokNamespace).
+    // Before this, connectNeeded() only ever consulted the account key, so a
+    // BYOK-only CLI user got the connect block re-pitched on every launch.
+    const { createSettingsStore } = require(join(cliDir, 'src', 'deps.js'));
+    const store = createSettingsStore({ dir: HOME });
+    assert(screens.connectNeeded(), 'sanity: still no key of any kind here yet');
+    store.set('byok:openai', { key: 'sk-test-byok-onboarding' });
+    try {
+      assert(!screens.connectNeeded(), 'a BYOK provider key alone also retires the connect block');
+      assert(screens.providerRouteConfigured(), 'and providerRouteConfigured() reports it directly');
+    } finally {
+      store.remove('byok:openai');
+    }
+    assert(screens.connectNeeded(), 'removing the BYOK row brings the connect block back');
   }
 
   // ── the block has to reach a real 80×24 screen, unclipped ────────────────

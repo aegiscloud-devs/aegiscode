@@ -38,6 +38,7 @@ const render = require('./render.js');
 const { updateConfig, configExists, loadConfig } = require('./config.js');
 const { updateNotice, updateLine } = require('./update.js');
 const credentials = require('./credentials.js');
+const { createSettingsStore, isReservedNamespace } = require('./deps.js');
 
 const VERSION = require('../package.json').version;
 
@@ -443,11 +444,41 @@ function make(style, text) {
 }
 
 /**
+ * Whether this machine holds a BYOK provider route of the user's own — the
+ * desktop host's `providerRouteConfigured()`, ported here because the CLI's
+ * `/byok-key <provider>` writes the exact same `byok:<provider>` row (see
+ * `engine.js`'s `byokNamespace`) into the exact same settings.json, and
+ * `connectNeeded()` below used to only ever check the AEGIS account key —
+ * so a CLI user who did BYOK and never touched the account key got the
+ * connect block re-pitched at them on every single launch.
+ *
+ * `settings.list()` goes through `get()`, which never puts a plaintext key on
+ * a row (only the `configured` boolean already derived from it) — that field
+ * is what a row counts on, not a `key` string that doesn't exist on it.
+ *
+ * Failure reads as "no configured route found", which keeps the block
+ * visible — same fail-toward-showing-it bias as the account-key read below.
+ */
+function providerRouteConfigured() {
+  try {
+    const store = createSettingsStore({ dir: credentials.aegisHome() });
+    return store.list().some((row) => {
+      if (!row || !row.provider || isReservedNamespace(row.provider)) return false;
+      const baseURL = typeof row.baseURL === 'string' ? row.baseURL.trim() : '';
+      return Boolean(row.configured || baseURL);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the welcome screen should still pitch the two connect routes.
  *
- * Once an AEGIS account key is on this machine the user has already taken one
- * of them, and two rows repeating what they just did is nagging, not
- * onboarding — the same rule the desktop host applies to its welcome panel.
+ * Once an AEGIS account key is on this machine, or a BYOK provider route is
+ * configured, the user has already taken one of them, and two rows repeating
+ * what they just did is nagging, not onboarding — the same rule the desktop
+ * host applies to its welcome panel.
  *
  * A read that fails (no credentials file, an unreadable one) resolves to
  * "show it": the block is exactly what a user with no key needs, and a
@@ -456,6 +487,7 @@ function make(style, text) {
  */
 function connectNeeded() {
   try {
+    if (providerRouteConfigured()) return false;
     return !credentials.keyStatus().configured;
   } catch {
     return true;
@@ -688,6 +720,7 @@ module.exports = {
   WHATS_NEW,
   CONNECT,
   connectNeeded,
+  providerRouteConfigured,
   trustLines,
   themePickerLines,
   keyLines,

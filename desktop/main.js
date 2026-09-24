@@ -509,13 +509,67 @@ function isSafeExternalUrl(url) {
 }
 
 /**
+ * Whether this machine holds a provider route of the user's OWN — the "bring
+ * your own key" half of the welcome block's two pitches.
+ *
+ * The AEGIS Cloud key is `aegis.apiKey` and is reported separately as
+ * `keyConfigured`; a BYOK provider row never appears there (it is written by
+ * the Provider settings card through settings.set(provider, {baseURL, key})),
+ * so it needs its own reader. A row counts once it carries either a key (the
+ * pasted-provider case) or a baseURL (the point-it-at-a-local-model case) —
+ * both are the user having answered the question the block was asking.
+ *
+ * `settings.list()` goes through `get()`, which is the same reader the IPC
+ * bridge uses to answer the renderer — it never puts the plaintext key on a
+ * row (that would put it one `list()` call away from crossing IPC), only the
+ * `configured` boolean it already derived from the key. Reading `row.key`
+ * here was always reading a field `get()` doesn't emit, so a pasted-key-only
+ * provider row (no baseURL — the common case: OpenAI, Anthropic, DeepSeek)
+ * never counted and the block kept nagging a user who had already connected
+ * one. Verified live: `store.set('openai', { key })` then `list()` — the row
+ * carries `configured: true` and no `key` property at all.
+ *
+ * Reserved namespaces are excluded for the same reason createModelDispatch
+ * filters them: they are the store's own bookkeeping (the AEGIS key, the
+ * memory-persist preference), not a provider the user configured.
+ *
+ * Failure reads as "no", which keeps the block visible — the same
+ * fail-toward-showing-it bias the CLI's connectNeeded() documents. Showing a
+ * block the user has outgrown is a nag; hiding one a new install needed is a
+ * dead end, and only the latter loses the user.
+ */
+function providerRouteConfigured(engine) {
+  try {
+    const list = engine && engine.settings && engine.settings.list;
+    if (typeof list !== 'function') return false;
+    return (list.call(engine.settings) || []).some((row) => {
+      if (!row || !row.provider || isReservedNamespace(row.provider)) return false;
+      const baseURL = typeof row.baseURL === 'string' ? row.baseURL.trim() : '';
+      return Boolean(row.configured || baseURL);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pure mapping: IPC payload -> shared-client call. No Electron types here, so
  * tests can drive it with a stub client and a fake ipcMain. `openExternal` is
  * the one exception — it is itself just a function (default a harmless
  * reject), injected by bootstrap() so this module still needs no `electron`
  * import to stay unit-testable.
  */
-function createIpcDispatch(aegis, dir, persistApiKey, openExternal) {
+function createIpcDispatch(aegis, dir, persistApiKey, openExternal, providerConfigured) {
+  // `providerConfigured` is an injected thunk (bootstrap() passes one that reads
+  // the settings store) so this module keeps its no-Electron, unit-testable
+  // shape; absent in tests and older call sites, where it reads as "no".
+  const hasOwnProviderKey = () => {
+    try {
+      return Boolean(typeof providerConfigured === 'function' && providerConfigured());
+    } catch {
+      return false;
+    }
+  };
   const openExternalFn = openExternal || (() => Promise.reject(new Error('no opener configured')));
   const dispatch = {
     status: () => ({
@@ -524,6 +578,12 @@ function createIpcDispatch(aegis, dir, persistApiKey, openExternal) {
       apiBase: aegis.apiBase,
       keyConfigured: Boolean(aegis.apiKey),
       keyMask: maskKey(aegis.apiKey),
+      // The welcome block pitches TWO routes (bring your own key, or AEGIS
+      // Cloud) and must retire once the user has taken either one. A BYOK
+      // provider key never touches aegis.apiKey, so without this the block
+      // kept re-pitching "bring your own key" at someone who just did — see
+      // applyWelcomeConnect() in renderer/app.js.
+      providerConfigured: hasOwnProviderKey(),
     }),
 
     // In-app API key entry (plan rebuild): replace the live client key and
@@ -628,8 +688,8 @@ function withReplyNotify(promise, event, onReplyFinished) {
  *  tests, where the safe no-op default in createIpcDispatch takes over.
  *  `onReplyFinished` is likewise bootstrap()-only: it fires the native
  *  "reply ready" notification when the window is unfocused/hidden. */
-function registerIpc(ipcMain, aegis, dir, persistApiKey, openExternal, onReplyFinished) {
-  const dispatch = createIpcDispatch(aegis, dir, persistApiKey, openExternal);
+function registerIpc(ipcMain, aegis, dir, persistApiKey, openExternal, onReplyFinished, providerConfigured) {
+  const dispatch = createIpcDispatch(aegis, dir, persistApiKey, openExternal, providerConfigured);
   for (const [name, handler] of Object.entries(dispatch)) {
     if (name === 'chatCompletion') {
       // Streaming render (D2.1): when the renderer asks for stream, SSE deltas
@@ -2378,7 +2438,8 @@ function bootstrap() {
     dataDir,
     persistApiKey,
     (url) => shell.openExternal(url),
-    notifyReplyIfUnfocused
+    notifyReplyIfUnfocused,
+    () => providerRouteConfigured(engine)
   );
   registerModelIpc(
     ipcMain,
@@ -2755,6 +2816,7 @@ if (electron && electron.app) {
 module.exports = {
   createIpcDispatch,
   registerIpc,
+  providerRouteConfigured,
   IPC_PREFIX,
   MODEL_PREFIX,
   SYNC_PREFIX,
