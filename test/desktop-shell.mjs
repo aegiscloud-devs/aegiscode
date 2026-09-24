@@ -20,6 +20,7 @@ const require = createRequire(import.meta.url);
 const {
   createIpcDispatch,
   registerIpc,
+  providerRouteConfigured,
   IPC_PREFIX,
   CHAT_DELTA_CHANNEL,
   maskKey,
@@ -500,6 +501,29 @@ try {
     /function deltaListener\b/.test(preloadJs) &&
       /if \(id !== want\) return;/.test(preloadJs),
     'preload drops chunks addressed to another stream'
+  );
+
+  // providerRouteConfigured() drives the welcome block's BYOK retirement.
+  // list() only ever returns `configured` (a boolean `get()` derives from the
+  // key), never the plaintext key itself — a prior version of this check read
+  // a `row.key` string that `get()` never emits, so the single most common
+  // BYOK row (a pasted provider key, no baseURL) never counted.
+  const fakeEngine = (rows) => ({ settings: { list: () => rows } });
+  assert(
+    providerRouteConfigured(fakeEngine([{ provider: 'openai', baseURL: '', configured: true, keyMask: 'sk-a…zzzz' }])) === true,
+    'a pasted-key-only provider row (configured, no baseURL) counts as a connected route'
+  );
+  assert(
+    providerRouteConfigured(fakeEngine([{ provider: 'local', baseURL: 'http://127.0.0.1:11434', configured: false, keyMask: null }])) === true,
+    'a local-model baseURL row counts as a connected route even with no key'
+  );
+  assert(
+    providerRouteConfigured(fakeEngine([])) === false,
+    'no rows at all is not a connected route'
+  );
+  assert(
+    providerRouteConfigured(fakeEngine([{ provider: '__aegis', baseURL: '', configured: true, keyMask: 'x' }])) === false,
+    'a reserved namespace row (the AEGIS key itself) is never read as a BYOK route'
   );
 
   console.log(`Desktop shell smoke test passed: ${channels.join(', ')}`);
