@@ -143,6 +143,38 @@ export const CHANNELS = {
     scopes: ['https://www.googleapis.com/auth/youtube.force-ssl'],
     credentialUrl: 'https://console.cloud.google.com/apis/credentials',
   },
+  mastodon: {
+    id: 'mastodon',
+    label: 'Mastodon',
+    docs: 'docs/social-publishing.md#mastodon',
+    sets: [
+      {
+        name: 'user-token',
+        fields: [
+          { key: 'instance', env: 'MASTODON_INSTANCE', label: 'instance base URL (e.g. https://mastodon.social)' },
+          { key: 'accessToken', env: 'MASTODON_ACCESS_TOKEN', label: 'access token (Settings → Development → New application)' },
+        ],
+      },
+    ],
+    scopes: ['read', 'write:statuses'],
+    credentialUrl: 'https://mastodon.social/settings/applications',
+  },
+  bluesky: {
+    id: 'bluesky',
+    label: 'Bluesky',
+    docs: 'docs/social-publishing.md#bluesky',
+    sets: [
+      {
+        name: 'app-password',
+        fields: [
+          { key: 'handle', env: 'BLUESKY_HANDLE', label: 'handle (e.g. aegiscloud.org or name.bsky.social)' },
+          { key: 'appPassword', env: 'BLUESKY_APP_PASSWORD', label: 'app password (Settings → App Passwords — not your main password)' },
+        ],
+      },
+    ],
+    scopes: ['com.atproto.server.createSession', 'com.atproto.repo.createRecord'],
+    credentialUrl: 'https://bsky.app/settings/app-passwords',
+  },
 };
 
 export const CHANNEL_IDS = Object.keys(CHANNELS);

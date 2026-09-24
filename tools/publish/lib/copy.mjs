@@ -271,6 +271,8 @@ export const CHAR_LIMITS = {
   'reddit-body': 40000,
   'facebook-post': 63206,
   'facebook-group-post': 63206,
+  'mastodon-post': 500,
+  'bluesky-post': 300,
 };
 
 /**

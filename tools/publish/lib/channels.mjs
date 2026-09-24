@@ -132,6 +132,82 @@ export function xMediaRequests({ item, creds, filePath, bytes, mediaType }) {
   ];
 }
 
+/* ------------------------------------------------------------ Mastodon ---- */
+
+export function mastodonAuthHeaders(creds) {
+  return { authorization: `Bearer ${creds.accessToken}`, 'content-type': 'application/json' };
+}
+
+export function mastodonRequests({ item, creds }) {
+  const base = String(creds.instance || '').replace(/\/$/, '');
+  const body = { status: item.text, visibility: 'public' };
+  if (item.replyToPrevious) body.in_reply_to_id = '<status_id>';
+  return [
+    {
+      id: `${item.id}-status`,
+      label: `${item.label}`,
+      method: 'POST',
+      url: `${base}/api/v1/statuses`,
+      headers: mastodonAuthHeaders(creds),
+      bodyType: 'json',
+      body,
+      produces: 'status_id',
+      extract: (json) => json?.id,
+      note: item.replyToPrevious
+        ? 'reply chain: <status_id> is the id returned by the previous request'
+        : 'first post — no reply target',
+    },
+  ];
+}
+
+/* ------------------------------------------------------------ Bluesky ----- */
+
+const BSKY_XRPC = 'https://bsky.social/xrpc';
+
+export function blueskyRequests({ item, creds }) {
+  const session = {
+    id: `${item.id}-session`,
+    label: 'create session (app password)',
+    method: 'POST',
+    url: `${BSKY_XRPC}/com.atproto.server.createSession`,
+    headers: { 'content-type': 'application/json' },
+    bodyType: 'json',
+    body: { identifier: creds.handle, password: creds.appPassword },
+    produces: 'access_jwt',
+    extract: (json) => json?.accessJwt,
+    note: 'the app password never appears in output; the session JWT is used as a Bearer header below',
+  };
+
+  const record = {
+    $type: 'app.bsky.feed.post',
+    text: item.text,
+    createdAt: new Date().toISOString(),
+  };
+  if (item.replyToPrevious) {
+    record.reply = {
+      root: { uri: '<post_uri>', cid: '<post_cid>' },
+      parent: { uri: '<post_uri>', cid: '<post_cid>' },
+    };
+  }
+
+  const post = {
+    id: `${item.id}-post`,
+    label: `${item.label}`,
+    method: 'POST',
+    url: `${BSKY_XRPC}/com.atproto.repo.createRecord`,
+    headers: { authorization: 'Bearer <access_jwt>', 'content-type': 'application/json' },
+    bodyType: 'json',
+    body: { repo: creds.handle, collection: 'app.bsky.feed.post', record },
+    produces: 'post_uri',
+    extract: (json) => json?.uri,
+    note: item.replyToPrevious
+      ? 'reply chain: <post_uri>/<post_cid> come from the previous request (cid not resolvable from a dry run)'
+      : 'first post — no reply target',
+  };
+
+  return [session, post];
+}
+
 /* -------------------------------------------------------------- Reddit ---- */
 
 export function redditRequests({ item, creds }) {
@@ -357,6 +433,10 @@ export function buildRequests({ item, credentials, media = {}, optional = {}, me
       return facebookRequests({ item, creds: credentials, optional });
     case 'youtube':
       return youtubeRequests({ item, creds: credentials, videoPath: media.videoPath || null });
+    case 'mastodon':
+      return mastodonRequests({ item, creds: credentials });
+    case 'bluesky':
+      return blueskyRequests({ item, creds: credentials });
     default:
       throw new Error(`no adapter for channel "${item.channel}"`);
   }
@@ -375,6 +455,10 @@ export function credentialRequirements(item) {
         : { channel: 'facebook', need: 'pageId/pageAccessToken' };
     case 'youtube':
       return { channel: 'youtube', need: 'clientId/clientSecret/refreshToken/channelId' };
+    case 'mastodon':
+      return { channel: 'mastodon', need: 'instance/accessToken' };
+    case 'bluesky':
+      return { channel: 'bluesky', need: 'handle/appPassword' };
     default:
       return { channel: item.channel, need: '(unknown)' };
   }

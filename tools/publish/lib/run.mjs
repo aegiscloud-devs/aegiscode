@@ -68,6 +68,17 @@ const USAGE = `aegis publish — the credential-driven publishing layer for the 
       Without --live this is a dry run for that one channel.
       With --live it sends the requests -- only if every gate is open.
 
+  publish broadcast --text "..." [--live] [--channels x,mastodon,bluesky]
+      Fan the same text out to every channel currently LIVE, in parallel
+      (one platform failing never blocks another -- Promise.allSettled).
+      Text is not sourced from the campaign docs; you supply it directly.
+      Truncated per channel against CHAR_LIMITS if it doesn't fit (X 280,
+      Mastodon 500, Bluesky 300), with a warning printed for the ones cut.
+      --channels restricts the fan-out to a comma-separated subset.
+      Without --live this is a dry run showing every request that would go
+      to every channel. Not gated by docs/launch-readiness.md (that gate is
+      specific to the campaign's own posts, not an ad-hoc broadcast).
+
 The launch gate is read from docs/launch-readiness.md §1 (§6 T-7); the Reddit
 comment credits and Facebook group participation from docs/marketing-log.md §5
 (markers "publish-ledger:comments" / "publish-ledger:fb-groups").
@@ -245,6 +256,43 @@ export function verifyProbes(id, values) {
           bodyType: 'none',
           extract: (json) => json?.items?.[0]?.snippet?.title,
           produces: 'channel_title',
+        },
+      ];
+    case 'mastodon':
+      return [
+        {
+          id: 'mastodon-me',
+          label: 'identity',
+          method: 'GET',
+          url: `${String(values.instance || '').replace(/\/$/, '')}/api/v1/accounts/verify_credentials`,
+          headers: { authorization: `Bearer ${values.accessToken}` },
+          bodyType: 'none',
+          extract: (json) => json?.username,
+          produces: 'username',
+        },
+      ];
+    case 'bluesky':
+      return [
+        {
+          id: 'bluesky-session',
+          label: 'create session (app password)',
+          method: 'POST',
+          url: 'https://bsky.social/xrpc/com.atproto.server.createSession',
+          headers: { 'content-type': 'application/json' },
+          bodyType: 'json',
+          body: { identifier: values.handle, password: values.appPassword },
+          produces: 'access_jwt',
+          extract: (json) => json?.accessJwt,
+        },
+        {
+          id: 'bluesky-profile',
+          label: 'identity',
+          method: 'GET',
+          url: `https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(values.handle)}`,
+          headers: { authorization: 'Bearer <access_jwt>' },
+          bodyType: 'none',
+          extract: (json) => json?.handle,
+          produces: 'handle',
         },
       ];
     default:
@@ -825,6 +873,105 @@ export async function sendRequest(request, { fetchImpl, vars = new Map() }) {
   return { ok: Boolean(res.ok), status: res.status, snippet: String(text).slice(0, 400), vars: out };
 }
 
+/**
+ * Run a channel's full request chain in order, threading each request's
+ * `produces` value into the next via `vars` (the same substitution
+ * `sendRequest` already does for a single call). Stops at the first failure
+ * rather than sending a partial chain (e.g. Bluesky's post after a failed
+ * session, or an X reply with no tweet_id to reply to).
+ */
+export async function sendChain(requests, { fetchImpl }) {
+  const vars = new Map();
+  let last = null;
+  for (const request of requests) {
+    last = await sendRequest(request, { fetchImpl, vars });
+    if (!last.ok) return { ok: false, status: last.status, snippet: last.snippet, step: request.label };
+    for (const [k, v] of Object.entries(last.vars)) vars.set(k, v);
+  }
+  return { ok: true, status: last?.status, snippet: last?.snippet, vars: Object.fromEntries(vars) };
+}
+
+/**
+ * Fan a single piece of text out to every channel currently reporting LIVE,
+ * in parallel -- one platform's failure never blocks another's (Promise.allSettled,
+ * not Promise.all). Unlike `post`, this does not source text from the campaign
+ * docs (there is no per-platform copy written for a broadcast); the caller
+ * supplies it directly via --text, truncated per channel against CHAR_LIMITS
+ * so an over-length post never gets fired instead of silently failing sends.
+ */
+export async function commandBroadcast({
+  argv = {},
+  env = process.env,
+  home,
+  repoRoot,
+  write,
+  fetchImpl = fetch,
+  live = false,
+}) {
+  const text = argv.text;
+  if (!text) {
+    write('broadcast: --text "..." is required.\n');
+    return EXIT.USAGE;
+  }
+  const creds = loadCredentials({ env, home });
+  const requestedChannels = argv.channels ? String(argv.channels).split(',').map((s) => s.trim()) : null;
+  const liveChannels = Object.keys(creds.channels).filter((id) => {
+    if (requestedChannels && !requestedChannels.includes(id)) return false;
+    return creds.channels[id].live;
+  });
+
+  const lines = [];
+  lines.push(`aegis publish — broadcast ${live ? '--live' : '(dry run; add --live to send)'}`);
+  lines.push('');
+
+  if (liveChannels.length === 0) {
+    lines.push('DARK: no channel is live (or none matched --channels). Nothing to broadcast to.');
+    write(lines.join('\n') + '\n');
+    return EXIT.DARK;
+  }
+
+  const surfaceFor = { x: 'x-post', mastodon: 'mastodon-post', bluesky: 'bluesky-post' };
+  const plan = liveChannels.map((channel) => {
+    const limit = CHAR_LIMITS[surfaceFor[channel]];
+    const fits = !limit || charCount(text) <= limit;
+    const channelText = fits || !limit ? text : `${text.slice(0, limit - 1)}…`;
+    return { channel, text: channelText, truncated: !fits };
+  });
+
+  for (const p of plan) {
+    lines.push(`--- ${p.channel} ---`);
+    if (p.truncated) lines.push(`  WARNING: truncated to fit ${surfaceFor[p.channel]} (${charCount(p.text)} chars)`);
+    const item = { id: `broadcast-${p.channel}`, channel: p.channel, label: 'broadcast', text: p.text };
+    const requests = buildRequests({ item, credentials: creds.channels[p.channel].values });
+    if (!live) {
+      requests.forEach((r, i) => lines.push(...renderRequest(r, i + 1, secretsFromEnvAndFile({ env, home }))));
+      lines.push('');
+      continue;
+    }
+    p.requests = requests;
+  }
+
+  if (!live) {
+    write(lines.join('\n') + '\n');
+    return EXIT.OK;
+  }
+
+  const results = await Promise.allSettled(plan.map((p) => sendChain(p.requests, { fetchImpl })));
+  let anyFailed = false;
+  results.forEach((r, i) => {
+    const channel = plan[i].channel;
+    if (r.status === 'fulfilled' && r.value.ok) {
+      lines.push(`${channel}: sent (${r.value.status})`);
+    } else {
+      anyFailed = true;
+      const detail = r.status === 'fulfilled' ? `${r.value.status} at "${r.value.step}": ${r.value.snippet}` : r.reason.message;
+      lines.push(`${channel}: FAILED — ${detail}`);
+    }
+  });
+  write(lines.join('\n') + '\n');
+  return anyFailed ? EXIT.LIVE_FAILED : EXIT.OK;
+}
+
 function multipartBody(values) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(values)) fd.append(k, String(v));
@@ -897,6 +1044,10 @@ export async function main(argv, { env = process.env, home, repoRoot, write = (s
     case 'post':
       return {
         code: await commandPost({ argv: args, env, home, repoRoot: root, write, fetchImpl, live: Boolean(args.live), week, media, now }),
+      };
+    case 'broadcast':
+      return {
+        code: await commandBroadcast({ argv: args, env, home, repoRoot: root, write, fetchImpl, live: Boolean(args.live) }),
       };
     default:
       return { code: EXIT.USAGE, out: `unknown subcommand "${command}"\n\n${USAGE}` };
