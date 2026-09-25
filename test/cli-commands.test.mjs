@@ -132,9 +132,9 @@ const REFERENCE_NAMES = [
   'feedback', 'bug', 'issue', 'onboarding', 'prs', 'review', 'benchmark', 'waifu',
   'new', 'tokens', 'skills', 'thinking', 'mcp', 'memory', 'confirm', 'yolo',
   'multiyolo', 'router', 'multi', 'research', 'debate', 'billing', 'cloud', 'gmail',
-  'clone',
+  'clone', 'upgrade',
 ];
-eq(REFERENCE_NAMES.length, 57, 'the reference list is the expected 57 names');
+eq(REFERENCE_NAMES.length, 58, 'the reference list is the expected 58 names');
 for (const name of REFERENCE_NAMES) {
   assert(findCommand(name), `the reference command /${name} is present`);
 }
@@ -145,6 +145,32 @@ for (const name of ['byok', 'byok-set', 'byok-rm', 'models', 'tool', 'aegis-impo
   assert(findCommand(name), `the cloud-only command /${name} is present`);
 }
 assert(COMMANDS.length >= 60, `the table has at least 60 entries (got ${COMMANDS.length})`);
+
+// ── /upgrade is registered and wired to the update helpers ──────────────────
+// It was missing from the table entirely while update.js exported
+// upgradeAdvice/latestPublishedVersion and commands.js imported them without a
+// consumer — a command that exists in the reference, in /help docs and in the
+// import line, but resolves to `unknown` at the prompt.
+const upgrade = findCommand('upgrade');
+assert(upgrade, 'the reference command /upgrade is present');
+eq(upgrade.category, 'support', '/upgrade is a support command');
+eq(upgrade.hint, '[check]', '/upgrade advertises [check]');
+assert(Array.isArray(upgrade.args) && upgrade.args.includes('action'), '/upgrade takes an action positional');
+eq(typeof upgrade.handler, 'function', '/upgrade is handler-backed, not unavailable');
+assert(!upgrade.tool, '/upgrade is not tool-backed');
+eq(parseLine('/upgrade').kind, 'command', '/upgrade resolves at the prompt');
+
+// ── the rewired orchestrator commands actually do something ─────────────────
+// multi/multiyolo/research/debate/aegis-council/aegis-multi used to be
+// composition-only stubs (or `unavailable`); they are all handler-backed now,
+// so a bare `/multi <task>` is executable rather than advice.
+for (const name of ['multi', 'multiyolo', 'research', 'debate', 'aegis-council', 'aegis-multi']) {
+  const entry = findCommand(name);
+  assert(entry, `the rewired command /${name} is present`);
+  eq(typeof entry.handler, 'function', `/${name} is handler-backed`);
+  assert(!entry.unavailable, `/${name} is not an unavailable stub`);
+  eq(parseLine(`/${name}`).kind, 'command', `/${name} resolves at the prompt`);
+}
 
 // ── every tool-backed command names a real registry tool ────────────────────
 const toolNames = new Set(deps.createTools({}).toolList().map((t) => t.name));

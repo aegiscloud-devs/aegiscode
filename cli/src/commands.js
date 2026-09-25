@@ -1289,6 +1289,22 @@ const COMMANDS = [
     },
   },
   {
+    name: 'upgrade', args: ['action'], hint: '[check]', category: 'support',
+    desc: 'Check for a newer published version',
+    handler: async (c) => {
+      note(c, 'Checking the npm registry…');
+      c.render();
+      // The registry lookup is a blocking `npm view`, so it runs inside the
+      // spinner when the context offers one (and is skipped entirely in demo
+      // mode, where a network answer would be a lie).
+      const run = c && c.withWorking ? (fn) => c.withWorking(fn) : (fn) => fn();
+      const latest = c.ctx && c.ctx.demo ? null : await run(() => Promise.resolve(latestPublishedVersion()));
+      panel(c, upgradePanelLines(upgradeAdvice({ latest }).lines));
+      c.render();
+      return true;
+    },
+  },
+  {
     name: 'vim', args: ['mode'], hint: '[on|off]', category: 'model',
     desc: 'Toggle vim keymap',
     handler: async (c, args) => {
