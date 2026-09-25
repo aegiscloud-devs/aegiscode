@@ -230,6 +230,7 @@ function statusWord(row) {
   if (row.error) return 'unreadable';
   if (!row.installed) return row.exists ? 'not installed' : 'no config';
   if (row.serverExists === false) return 'BROKEN';
+  if (row.serverUnverifiable) return 'host-resolved';
   return 'installed';
 }
 
@@ -245,7 +246,13 @@ function statusText(rows, ctx, io) {
     if (row.serverExists === false) {
       lines.push(
         `  ${' '.repeat(w)}  the server this names is gone: ${row.serverPath}` +
-          '\n' + `  ${' '.repeat(w)}  re-run `aegiscode mcp install --target ${row.id}``
+          '\n' + `  ${' '.repeat(w)}  re-run \`aegiscode mcp install --target ${row.id}\``
+      );
+    }
+    if (row.serverUnverifiable) {
+      lines.push(
+        `  ${' '.repeat(w)}  path is host-resolved (${row.serverPath}) — the editor\n` +
+          `  ${' '.repeat(w)}  expands it at load time, so it cannot be checked from here.`
       );
     }
   }
@@ -334,6 +341,7 @@ function runStatus(opts, ctx, io) {
           state: statusWord(r),
           server_path: r.serverPath || null,
           server_exists: r.serverExists === undefined ? null : r.serverExists,
+          server_unverifiable: Boolean(r.serverUnverifiable),
           entry: r.entry,
           error: r.error,
           docs: r.docs,
@@ -358,8 +366,11 @@ function runStatus(opts, ctx, io) {
   io.stdout.write(statusText(rows, ctx, io));
   const bad = rows.filter((r) => r.serverExists === false).length;
   const held = rows.filter((r) => r.installed).length;
+  const unver = rows.filter((r) => r.serverUnverifiable).length;
   io.stdout.write(
-    `\n  ${held} configured${bad ? `, ${bad} pointing at a missing server — re-run install` : ''}.\n`
+    `\n  ${held} configured` +
+      `${unver ? `, ${unver} host-resolved` : ''}` +
+      `${bad ? `, ${bad} pointing at a missing server — re-run install` : ''}.\n`
   );
   return 0;
 }

@@ -498,6 +498,23 @@ function entryServerPath(entry) {
 }
 
 /**
+ * Host-expanded placeholders — `${CLAUDE_PLUGIN_ROOT}`, `$HOME`,
+ * `%APPDATA%`.
+ *
+ * The EDITOR substitutes these at load time, not us. A plugin `.mcp.json`
+ * ships `${CLAUDE_PLUGIN_ROOT}/mcp/server.js` precisely so one file works on
+ * every machine. Existence is therefore not knowable from here, and crying
+ * "the server is gone" would push a user to overwrite a deliberately portable
+ * config with a machine-absolute path — the exact portability the placeholder
+ * exists to preserve.
+ */
+const HOST_VAR_RE = /\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%[A-Za-z_][A-Za-z0-9_]*%/;
+
+function hasHostVar(value) {
+  return typeof value === 'string' && HOST_VAR_RE.test(value);
+}
+
+/**
  * Per target+scope: does the config exist, is our entry in it, and does the
  * command it names still exist on disk? The last question is the one that
  * catches a moved checkout — the silent failure this whole module is written
@@ -543,7 +560,9 @@ function status(ids, opts = {}) {
       // can say "installed, but pointing at nothing".
       if (row.installed) {
         row.serverPath = entryServerPath(row.entry);
-        row.serverExists = row.serverPath ? isFile(row.serverPath) : null;
+        row.serverUnverifiable = hasHostVar(row.serverPath);
+        row.serverExists =
+          row.serverPath && !row.serverUnverifiable ? isFile(row.serverPath) : null;
       }
       rows.push(row);
     }
@@ -607,6 +626,7 @@ module.exports = {
   detected,
   renderEntry,
   entryServerPath,
+  hasHostVar,
   parseTomlEntry,
   upsertTomlSection,
   removeTomlSection,

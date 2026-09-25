@@ -391,11 +391,12 @@ async function main(argv) {
     ].join('\n'));
     return 0;
   }
-  const shim = createShimServer(opts);
+  let shim;
   try {
+    shim = createShimServer(opts);
     await shim.listen();
   } catch (err) {
-    logLine(process.stderr, `failed to listen: ${err.message}`);
+    logLine(process.stderr, `aegiscode shim: ${err.message}`);
     return 1;
   }
   const stop = async () => { await shim.close(); process.exit(0); };
@@ -405,9 +406,14 @@ async function main(argv) {
 }
 
 if (require.main === module) {
-  main(process.argv.slice(2)).then((code) => {
-    if (typeof code === 'number') process.exit(code);
-  });
+  main(process.argv.slice(2))
+    .then((code) => {
+      if (typeof code === 'number') process.exit(code);
+    })
+    .catch((err) => {
+      logLine(process.stderr, `aegiscode shim: ${err && err.message ? err.message : err}`);
+      process.exit(1);
+    });
 }
 
 module.exports = { createShimServer, extraFromBody, DEFAULT_PORT };
