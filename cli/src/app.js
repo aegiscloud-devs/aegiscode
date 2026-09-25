@@ -201,6 +201,8 @@ function createApp(options = {}) {
     tokens: 0,
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     cost: 0, // € spent, from the ledger rows that landed AFTER the baseline
     balance: null,
     // How many times each ledger-row identity is already accounted for.
@@ -1033,7 +1035,17 @@ function createApp(options = {}) {
       turns: session.turns,
       calls: session.calls,
       startedAt: session.startedAt,
-      tokens: { input: session.inputTokens, output: session.outputTokens, total: session.tokens },
+      // The shared bucket shape `{input, output, cacheRead, cacheWrite}` — the
+      // same object /cost's accounting and the ledger carry, so the panels
+      // cannot render a different turn than the one that was billed. `input` is
+      // the miss half; see recordTurn.
+      tokens: {
+        input: session.inputTokens,
+        output: session.outputTokens,
+        cacheRead: session.cacheReadTokens,
+        cacheWrite: session.cacheWriteTokens,
+        total: session.tokens,
+      },
       costEur: session.cost,
       balance: session.balance,
       plan: session.plan || null,
@@ -1440,8 +1452,24 @@ function createApp(options = {}) {
     const tokens = usageTokens(usage);
     if (tokens != null) {
       session.tokens += tokens;
-      session.inputTokens += Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0;
-      session.outputTokens += Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0;
+      // The session tally is folded through the SHARED normaliser, not the raw
+      // wire spellings. Reading `input_tokens ?? prompt_tokens` here is what
+      // made the CLI's live tally disagree with its own ledger about the same
+      // turn: the providers do not merely spell these fields differently, they
+      // MEASURE them differently. Anthropic's `input_tokens` EXCLUDES
+      // `cache_read_input_tokens`; OpenAI/DeepSeek's `prompt_tokens` INCLUDES
+      // the hit. So `input + cacheRead` is right for the first and a
+      // double-count of the prompt for the second. `usageBuckets` resolves
+      // `input` to the MISS half in both cases (the same normalisation the
+      // ledger row, the desktop roll and costBreakdown already use), which is
+      // the only reading under which the /context prompt row means one thing on
+      // every provider. Without this the CLI accumulated no cache buckets at
+      // all, so /tokens drew two bars it could never fill.
+      const b = usageBuckets(usage);
+      session.inputTokens += b.input;
+      session.outputTokens += b.output;
+      session.cacheReadTokens += b.cacheRead;
+      session.cacheWriteTokens += b.cacheWrite;
     }
     return tokens;
   }
