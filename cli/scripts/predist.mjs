@@ -51,6 +51,29 @@ const FILES = [
   // quotes, and one stray one silently swallows the next real entry.)
   'client/env-file.js',
   'mcp/tools.js',
+  // The stdio MCP server itself — the process every editor config written by
+  // `aegiscode mcp install` points at. Staging the registry without it ships a
+  // package whose configs name a file that is not in the package, and an editor
+  // reports that as a server that simply never starts: no error the user can
+  // see. It exports nothing and registers its stdin handlers at load time, so
+  // it is verified by COMPILING it (see the probe below) and never required
+  // here — requiring it would switch the predist process stdin to flowing mode
+  // and it would then never exit.
+  'mcp/server.js',
+  // The editor-integration layer: the host registry, the canonical server spec,
+  // and the merge-only installer behind `aegiscode mcp install|status|remove`.
+  // Staged under vendor/hosts/ so the tree keeps the repo shape — these files
+  // require ../client/*.js, which resolves INSIDE the vendor tree, and
+  // hosts/spec.js finds the server one level up as vendor/mcp/server.js.
+  'hosts/spec.js',
+  'hosts/targets.js',
+  'hosts/install.js',
+  // The OpenAI-compatible shim (loopback /v1/chat/completions), for the many
+  // coding programs that take a base URL but speak no MCP. It resolves
+  // cli/src/models.js from either layout itself; in a checkout that is
+  // cli/src/models.js and in the package it is src/models.js, which ships
+  // because the CLI own source directory is published as-is.
+  'hosts/openai-shim.js',
   'desktop/renderer/usage.js',
   // The agent-loop engine (persistent shell, editFile/grep/exec, Task
   // subagents) the desktop app already ships (desktop/lib/local/). The CLI
@@ -135,6 +158,82 @@ function main() {
   console.log(`predist: staged ${staged.length} shared modules into cli/vendor/`);
   for (const s of staged) console.log(`  ${s}`);
   console.log(`predist: staged registry loads standalone (${count} tools)`);
+
+  // -------------------------------------------------------------------------
+  // The editor layer, proven from inside the staged tree.
+  // -------------------------------------------------------------------------
+  //
+  // Three things have to be true of the package we are about to publish, and
+  // none of them are visible from the repo:
+  //
+  //   1. the stdio server is present and is valid JavaScript;
+  //   2. `hosts/spec.js` resolves THAT copy of it, not a checkout path that
+  //      only exists on this machine — an editor config pointing at a missing
+  //      file fails silently, which is the worst failure mode there is;
+  //   3. `hosts/install.js` loads with its siblings resolved from vendor/.
+  //
+  // The server is compiled rather than required, deliberately: it registers
+  // process.stdin handlers at load time and exports nothing, so requiring it
+  // here would take over predist's own stdin and keep it alive forever.
+  const vm = require('node:vm');
+  const serverJs = path.join(VENDOR, 'mcp', 'server.js');
+  try {
+    new vm.Script(fs.readFileSync(serverJs, 'utf8'), { filename: serverJs });
+  } catch (err) {
+    console.error(`predist: staged mcp/server.js does not compile: ${err.message}`);
+    process.exit(1);
+  }
+
+  const hostsDir = path.join(VENDOR, 'hosts');
+  const spec = require(path.join(hostsDir, 'spec.js'));
+  const install = require(path.join(hostsDir, 'install.js'));
+  const targets = require(path.join(hostsDir, 'targets.js'));
+
+  // An empty AEGIS_MCP_SERVER so a developer's own override cannot mask a
+  // broken staged tree — the candidate we are asserting on must be the staged
+  // one, and nothing else.
+  const resolved = spec.resolveServer({ AEGIS_MCP_SERVER: '' });
+  const stagedServer = path.join(VENDOR, 'mcp', 'server.js');
+  if (!resolved.exists || resolved.path !== stagedServer) {
+    console.error(
+      `predist: staged hosts/spec.js resolves the server as ${resolved.path} ` +
+        `(exists: ${resolved.exists}), expected ${stagedServer}. An installed ` +
+        'aegiscode would write editor configs pointing at a file the package ' +
+        `never shipped. Candidates were:\n  ${resolved.candidates.join('\n  ')}`
+    );
+    process.exit(1);
+  }
+
+  // Plan one real install against a throwaway home: this is the exact document
+  // `aegiscode mcp install vscode` would write, so it is the cheapest possible
+  // proof that the packaged command points at a file that exists.
+  const vscode = targets.getTarget('vscode');
+  const plan = install.planTarget(vscode, 'user', {
+    ctx: install.hostCtx({ home: path.join(VENDOR, '.predist-home'), env: {}, cwd: REPO_DIR }),
+    specOpts: { env: { AEGIS_MCP_SERVER: '' } },
+  });
+  const wrote = JSON.stringify(plan.after || '');
+  if (plan.error || !plan.changed || !wrote.includes(JSON.stringify(stagedServer).slice(1, -1))) {
+    console.error(
+      `predist: a planned vscode install does not name the staged server ` +
+        `(error: ${plan.error && plan.error.message}, changed: ${plan.changed})`
+    );
+    process.exit(1);
+  }
+
+  // The shim resolves cli/src/models.js from either layout on its own load; a
+  // checkout has it and the package ships it as src/models.js. Loading it here
+  // is what catches a repo-shaped require that only works in development.
+  const shim = require(path.join(hostsDir, 'openai-shim.js'));
+  if (typeof shim.createShimServer !== 'function') {
+    console.error('predist: staged hosts/openai-shim.js exposes no createShimServer');
+    process.exit(1);
+  }
+
+  console.log(
+    `predist: editor layer verified (${targets.targetIds().length} host targets, ` +
+      `server resolves to vendor/mcp/server.js, shim loads)`
+  );
 }
 
 main();
