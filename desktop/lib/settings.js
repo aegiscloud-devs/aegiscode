@@ -74,6 +74,17 @@ const CONFIRM_MODE_NAMESPACE = '__confirmMode';
  *  what turns it off. Nothing secret lives here, so no encryption. */
 const MEMORY_PERSIST_NAMESPACE = '__memoryPersist';
 
+/** Reserved namespace for the avatar/companion preferences (Phase 21):
+ *  `{ enabled, showLevel, motion }` — app-level, not a provider, so it stays out
+ *  of the provider CRUD surface for the same reason the AEGIS key does. The
+ *  persona itself is deliberately NOT stored here: it is a document, not a
+ *  preference, and it lives at `<userData>/avatar/persona.json`, read and
+ *  written by main through lib/avatar/store.js so a hand-edited or imported
+ *  persona is validated on the way in (see docs/avatar-plan.md §3).
+ *  Defaults are the shipped behaviour: the avatar is ON, the level readout is
+ *  shown, and motion follows the OS `prefers-reduced-motion` setting. */
+const AVATAR_NAMESPACE = '__avatar';
+
 /** Namespaces the provider-config surface must never see or mutate. */
 const RESERVED_NAMESPACES = Object.freeze([
   AEGIS_KEY_NAMESPACE,
@@ -81,7 +92,11 @@ const RESERVED_NAMESPACES = Object.freeze([
   QUICK_LAUNCHER_NAMESPACE,
   CONFIRM_MODE_NAMESPACE,
   MEMORY_PERSIST_NAMESPACE,
+  AVATAR_NAMESPACE,
 ]);
+
+/** Motion modes the renderer understands (`system` = follow the OS). */
+const AVATAR_MOTION_MODES = Object.freeze(['system', 'full', 'minimal']);
 
 /** True for the AEGIS-key namespace(s) — provider CRUD must refuse these. */
 function isReservedNamespace(provider) {
@@ -359,6 +374,53 @@ function createSettingsStore({ dir, safeStorage } = {}) {
     return memoryPersistState();
   }
 
+  // --- Avatar: reserved namespace, plain preferences (Phase 21) ------------
+  // The companion's on/off switch, its level readout, and its motion mode.
+  // Nothing secret lives here, so no encryption — same reasoning as the quick
+  // launcher and memory-persist namespaces above.
+  //
+  // Deliberately narrow: `setAvatar()` stores only these three known keys, so a
+  // renderer (or a hand-edited settings.json) cannot park arbitrary state — a
+  // persona document, a capability override — in a namespace main reads back.
+  // The persona is a separate, validated file (lib/avatar/store.js) for exactly
+  // that reason.
+
+  function getAvatar() {
+    const cfg = load()[AVATAR_NAMESPACE] || {};
+    return {
+      // Unset === true: the companion ships on; an explicit `false` is the only
+      // thing that turns it off (and it must survive a reload).
+      enabled: cfg.enabled === undefined ? true : Boolean(cfg.enabled),
+      showLevel: cfg.showLevel === undefined ? true : Boolean(cfg.showLevel),
+      motion: AVATAR_MOTION_MODES.includes(cfg.motion) ? cfg.motion : 'system',
+    };
+  }
+
+  /** `{ ...preferences, source }` — mirrors memoryPersistState() so "off" and
+   *  "never set" stay distinguishable in the UI and in tests. */
+  function avatarState() {
+    const cfg = load()[AVATAR_NAMESPACE] || {};
+    return {
+      ...getAvatar(),
+      source: cfg.enabled === undefined ? 'default' : 'config',
+    };
+  }
+
+  /** Partial merge of the three known keys. Unknown keys are dropped, not saved. */
+  function setAvatar(patch = {}) {
+    const current = getAvatar();
+    const p = patch && typeof patch === 'object' ? patch : {};
+    const next = {
+      enabled: p.enabled === undefined ? current.enabled : Boolean(p.enabled),
+      showLevel: p.showLevel === undefined ? current.showLevel : Boolean(p.showLevel),
+      motion: AVATAR_MOTION_MODES.includes(p.motion) ? p.motion : current.motion,
+    };
+    const data = load();
+    data[AVATAR_NAMESPACE] = next;
+    save(data);
+    return avatarState();
+  }
+
   return {
     file,
     get,
@@ -379,6 +441,9 @@ function createSettingsStore({ dir, safeStorage } = {}) {
     getMemoryPersist,
     memoryPersistState,
     setMemoryPersist,
+    getAvatar,
+    avatarState,
+    setAvatar,
   };
 }
 
@@ -389,6 +454,8 @@ module.exports = {
   QUICK_LAUNCHER_NAMESPACE,
   CONFIRM_MODE_NAMESPACE,
   MEMORY_PERSIST_NAMESPACE,
+  AVATAR_NAMESPACE,
+  AVATAR_MOTION_MODES,
   DEFAULT_QUICK_LAUNCHER_SHORTCUT,
   RESERVED_NAMESPACES,
   isReservedNamespace,
