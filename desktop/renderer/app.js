@@ -3270,9 +3270,13 @@ function openSession(id) {
       // `tokens` and folds as unaccounted, which is stated rather than guessed.
       rollsBySession.set(s.id, rollMessages(msgs));
       renderRollMeter(s.id);
-      threadMessages = msgs
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({ role: m.role, content: m.content || m.text || '' }));
+      // …and the replay is built separately from the display: the bubbles
+      // above were drawn from `msgs`, and `rollMessages(msgs)` two lines up
+      // folds the ledger from `msgs` too, so neither is affected by anything
+      // the replay drops. What the replay must not do is rebuild the loop the
+      // stop path now avoids: reopen the session and the stored stop
+      // annotation would otherwise walk back into the next prompt as prose.
+      threadMessages = replayHistory(msgs);
       els.sessionsHint.textContent = `opened ${s.id.slice(0, 8)}…`;
     })
     .catch((err) => {
@@ -3405,7 +3409,9 @@ async function send() {
 
   // Snapshot prior turns for the model — the new prompt travels separately
   // as `prompt` and providers.js appends it after `messages` on the wire.
-  const historyForModel = threadMessages.slice();
+  // Folded, not copied: a turn that contributed no prose leaves two `user`
+  // rows adjacent, which strict providers reject outright (see replayHistory).
+  const historyForModel = replayHistory(threadMessages);
   threadMessages.push({ role: 'user', content: prompt });
 
   setBusy(true, { cancellable: true });
@@ -3423,6 +3429,11 @@ async function send() {
   let streamedText = '';
   let reasoningText = '';
   const toolLog = [];
+  // How much of the stream the live meter last measured. Per-turn by
+  // construction (declared here, not at module scope), so a new turn starts its
+  // preview fresh — see `liveMeterDue` for why the meter is not recomputed on
+  // every frame.
+  let meterChars = 0;
 
   // Text arrives in dozens of small chunks per second; painting each one is
   // what made the window feel locked up. One paint per frame, off the latest
@@ -3438,8 +3449,15 @@ async function send() {
     if (bodyEl && bodyEl.textContent !== streamedText) bodyEl.textContent = streamedText;
     // Live estimate so the topbar meter keeps moving while the reply streams
     // in, instead of sitting frozen on the previous turn's total until this
-    // one resolves — see renderRollMeter's `live` param.
-    renderRollMeter(sessionId, { prompt, reply: streamedText, reasoning: reasoningText });
+    // one resolves — see renderRollMeter's `live` param. Gated by
+    // `liveMeterDue`, because each call re-estimates the whole accumulated
+    // stream and this runs inside the painter: ungated it is linear per frame,
+    // i.e. quadratic over the turn, on the thread the reader is scrolling.
+    const streamChars = streamedText.length + reasoningText.length;
+    if (liveMeterDue(meterChars, streamChars)) {
+      meterChars = streamChars;
+      renderRollMeter(sessionId, { prompt, reply: streamedText, reasoning: reasoningText });
+    }
     stickToBottom();
   });
 
@@ -3494,7 +3512,15 @@ async function send() {
       (choice.message && choice.message.content) ||
       streamedText ||
       '(empty response)';
-    threadMessages.push({ role: 'assistant', content: text });
+    // `(empty response)` is a label for the bubble, not something the model
+    // said, and pushing it into the history taught the next turn that its own
+    // previous answer was that string. Kept out of the replay for the same
+    // reason as the stop annotations; the row is still stored below, and the
+    // openSession filter recognises it there too, so the live thread and a
+    // reopened one agree.
+    if (!isPlaceholderContent(text)) {
+      threadMessages.push({ role: 'assistant', content: text });
+    }
     const bits = [];
     if (data && data.model) bits.push(`model: ${data.model}`);
     else if (model) bits.push(`model: ${model}`);
@@ -3599,7 +3625,17 @@ async function send() {
       const salvage = salvageTurn({ streamedText, reasoningText });
       const text = salvage.text;
       const salvageReasoning = salvage.reasoning;
-      threadMessages.push({ role: 'assistant', content: text });
+      // What the SCREEN shows and what the MODEL gets next are two different
+      // strings on a cancelled turn, and they used to be the same one. The
+      // screen keeps the salvaged prose (a bubble reading "reasoning only" is
+      // more use than a blank), but handing that truncated deliberation back
+      // as the prior reply is a loop: the model is given an unfinished
+      // sentence, so it finishes the same sentence, every turn, forever — and
+      // openSession rebuilt the thread from the stored rows, so it outlived
+      // the session. The history gets the annotation instead; the row still
+      // carries every ledger field, so nothing about the spend changes.
+      const replayContent = replayableContent(salvage.kind, text);
+      threadMessages.push({ role: 'assistant', content: replayContent });
       // A stopped turn is a real exchange and the CLI records one: its
       // `appendHistory` writes a `status: 'stopped'` entry for every stopped
       // turn, and `aggregateSessionUsage` sums it like any other. The desktop
@@ -3628,7 +3664,11 @@ async function send() {
       try {
         await sync.append(sessionId, {
           role: 'assistant',
-          content: text,
+          // Stored annotated, not raw: this row is what openSession replays as
+          // context on reopen, so the loop would come back with the window.
+          // `reply: text` below is still the real salvaged prose — it is what
+          // was billed and what the estimate must be measured from.
+          content: replayContent,
           ...ledgerFields(undefined, model, turn, {
             prompt,
             reply: text,

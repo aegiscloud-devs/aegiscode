@@ -204,6 +204,7 @@ assert(
 );
 
 const appCode = code.get('app.js');
+const streamPolicyCode = code.get('stream-policy.js');
 
 // The specific dependency that shipped broken: the streaming decisions must be
 // declared by stream-policy.js, loaded before the scripts that call them.
@@ -319,7 +320,128 @@ assert(
   'the key URL has one definition (no drift to a second page)'
 );
 
+// 5d. The replay guard. This is the guard that exists because of THIS file's
+//     own premise: `replayableContent`/`isPlaceholderContent` were written into
+//     stream-policy.js, documented at length, and then never exported and never
+//     called — so the cancel loop they describe stayed live and every check
+//     here stayed green. A helper that is defined but unreferenced is
+//     indistinguishable from a fix that was never made, so it is pinned twice:
+//     behaviourally (stream-policy.test.mjs) and statically here.
+assert(
+  references(streamPolicyCode, 'replayableContent') &&
+    references(streamPolicyCode, 'isPlaceholderContent') &&
+    references(streamPolicyCode, 'replayHistory'),
+  'stream-policy.js defines the replay helpers'
+);
+assert(
+  /module\.exports\s*=\s*\{[\s\S]*?\breplayableContent\b[\s\S]*?\bisPlaceholderContent\b[\s\S]*?\breplayHistory\b/.test(
+    streamPolicyCode
+  ),
+  'and exports them — an unexported helper cannot be called from app.js, which is how this shipped dead'
+);
+assert(
+  /threadMessages\.push\(\{\s*role:\s*'assistant',\s*content:\s*replayContent\s*\}\)/.test(appCode),
+  "the stop path pushes the annotation into the replayed history, not the salvaged prose"
+);
+assert(
+  /const replayContent\s*=\s*replayableContent\(salvage\.kind,\s*text\)/.test(appCode),
+  'the annotation is derived from the salvage kind, so the two cannot drift'
+);
+assert(
+  /content:\s*replayContent,/.test(appCode),
+  'the stopped row is STORED annotated — openSession replays stored rows, so the raw prose would come back with the window'
+);
+assert(
+  /threadMessages\s*=\s*replayHistory\(msgs\)/.test(appCode),
+  'openSession builds the replay through replayHistory — the reopen half of the same loop'
+);
+// The replay path is shared, not written twice: both entry points (a reopened
+// session and a live thread) must go through the one function that strips the
+// annotations AND keeps the roles alternating. Moving a `.slice()` back to the
+// live path is how the adjacent-`user` regression would return, silently, with
+// every other check here still green.
+assert(
+  /const historyForModel\s*=\s*replayHistory\(threadMessages\)/.test(appCode),
+  'the live snapshot is folded too, not a bare slice — two `user` rows in a row are a provider 400'
+);
+assert(
+  !/const historyForModel\s*=\s*threadMessages\.slice\(\)/.test(appCode),
+  'and the bare slice that caused it is gone'
+);
+// The screen and the history are separate strings: the bubble must keep the
+// salvaged prose (addMessage is called with `text`, not `replayContent`), or a
+// cancelled turn renders as a bubble reading "(stopped: reasoning only)" and
+// the deliberation the user asked to keep is thrown away.
+assert(
+  /addMessage\('assistant',\s*text,\s*stopBits\.join\(' · '\),\s*sessionId,\s*toolLog\)/.test(appCode),
+  'the transcript bubble still shows the salvaged prose while the history gets the annotation'
+);
+// Scoped to the STOP path, not the whole file: the success path pushes `text`
+// too, inside its own isPlaceholderContent guard, and a file-wide "no raw push"
+// check would flag it. What must never happen is the stop path pushing the
+// salvaged prose — that string IS the unfinished deliberation.
+assert(
+  /const salvage\s*=\s*salvageTurn\(\{[\s\S]*?\}\)[\s\S]*?const replayContent\s*=[\s\S]*?threadMessages\.push\(\{\s*role:\s*'assistant',\s*content:\s*replayContent\s*\}\)[\s\S]*?const turn\s*=\s*turnAccounting\(undefined/.test(
+    appCode
+  ),
+  'the stop path pushes the annotation and never the raw salvage text'
+);
+
+// 5e. The live-meter cadence gate. `renderRollMeter(…, {live})` re-estimates
+//     the WHOLE accumulated stream, and this call site runs inside the rAF
+//     painter — so ungated it is linear per frame, i.e. quadratic over the
+//     turn, on the thread the reader is scrolling (measured: 7.7ms a frame at
+//     400k chars, 46% of a 60fps budget). Same failure mode as 5d: the decision
+//     can be correct and still buy nothing if the call site does not consult
+//     it, and `node --check` cannot see that.
+assert(
+  references(streamPolicyCode, 'liveMeterDue'),
+  'stream-policy.js defines liveMeterDue'
+);
+assert(
+  /module\.exports\s*=\s*\{[\s\S]*?\bliveMeterDue\b/.test(streamPolicyCode),
+  'and exports it — the renderer loads it as a global off the script tag'
+);
+assert(
+  /module\.exports\s*=\s*\{[\s\S]*?\bLIVE_METER_GROWTH_FRACTION\b/.test(streamPolicyCode),
+  'the growth fraction the rule promises is exported with it, so the test asserts against the real number'
+);
+// The gate has to be BETWEEN the call and the paint, and the measured figure
+// has to be updated at the same moment — otherwise the guard compares the
+// stream against a cursor that never advances either, and the meter either
+// freezes (never due) or re-estimates every frame anyway (always due).
+assert(
+  /if\s*\(\s*liveMeterDue\(meterChars,\s*streamChars\)\s*\)\s*\{[\s\S]{0,120}?meterChars\s*=\s*streamChars;[\s\S]{0,200}?renderRollMeter\(sessionId,\s*\{/.test(
+    appCode
+  ),
+  'the painter consults liveMeterDue before re-estimating, and advances meterChars when it does'
+);
+assert(
+  /const streamChars\s*=\s*streamedText\.length\s*\+\s*reasoningText\.length/.test(appCode),
+  'the gate measures the same text the estimate does — answer plus reasoning trace'
+);
+// Per-turn, not module scope: a shared cursor would carry one turn's length
+// into the next, so a fresh turn whose reply is shorter than the last one's
+// would never come due and the meter would sit frozen on the previous total.
+// Asserted by LOCALITY, not by the declaration's text — a bare
+// /let meterChars = 0;/ matches a module-scope hoist just as happily (probe
+// confirmed: hoisting it to the top of app.js left that form green). It has to
+// sit inside `send()`, between the per-turn stream buffers it measures and the
+// painter that reads it.
+assert(
+  /const toolLog = \[\];[\s\S]{0,400}?let meterChars = 0;[\s\S]{0,600}?const paintStream = rafPainter\(/.test(
+    appCode
+  ),
+  'the cursor is declared per turn inside send(), between the stream buffers and the painter'
+);
+assert(
+  !/renderRollMeter\(sessionId,\s*\{[^}]*\}\);/.test(
+    appCode.replace(/if\s*\(\s*liveMeterDue\(meterChars,\s*streamChars\)\s*\)[\s\S]{0,400}?\n\s*\}/, '')
+  ),
+  'the live re-estimate is not also called ungated somewhere else in the painter'
+);
+
 console.log(
   `renderer wiring tests passed (${localLoaded.length} local scripts, ` +
-    `${declaredBy.size} globals, no orphans, transcript policy wired)`
+    `${declaredBy.size} globals, no orphans, transcript policy wired, meter cadence wired)`
 );
