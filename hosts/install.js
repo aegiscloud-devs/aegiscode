@@ -64,6 +64,15 @@ function readText(file) {
   }
 }
 
+/** A path that is a real file — the only thing `node <path>` can execute. */
+function isFile(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function parseJson(text, file) {
   if (text === null || text.trim() === '') return {};
   try {
@@ -96,7 +105,18 @@ function getPath(doc, dotted) {
   return node;
 }
 
-function delPath(doc, dotted) {
+/**
+ * Delete a leaf from a dotted path.
+ *
+ * @param {object} doc
+ * @param {string} dotted
+ * @param {boolean} prune  Remove container objects left empty by the delete.
+ *   This is OFF by default, and the default is the safe one: an empty
+ *   `"mcpServers": {}` that the user wrote is a key in their file, and a
+ *   removal that never installed anything must not touch it. Callers pass
+ *   `true` only when they know the container was holding our own entry.
+ */
+function delPath(doc, dotted, prune = false) {
   const parts = dotted.split('.');
   const parents = [];
   let node = doc;
@@ -106,8 +126,11 @@ function delPath(doc, dotted) {
     node = node[part];
   }
   if (node && typeof node === 'object') delete node[parts[parts.length - 1]];
-  // Tidy up containers we created and now emptied, but never touch a container
-  // that existed before (an empty `mcpServers` the user wrote is theirs).
+  if (!prune) return doc;
+  // If deleting our key emptied a container, nothing else of the user's was in
+  // it, so dropping it is safe. (The one residue: a container the user had
+  // written as an empty object is also removed — a no-op in every editor, and
+  // the price of not leaving a stray `{}` behind.)
   for (let i = parents.length - 1; i >= 0; i--) {
     const [parent, key] = parents[i];
     const child = parent[key];
@@ -137,6 +160,38 @@ function tomlArray(values) {
  * the block is regenerated from the spec rather than patched key by key. A
  * generated section carries a header comment saying so.
  */
+/**
+ * Is this line a TOML header for `sectionPath`, or for a subtable of it?
+ *
+ * `renderEntry` emits `[...env]` as a subtable, so "our section" is a SPAN of
+ * the file — the header plus any `[section.…]` children — and not just one
+ * header line. Comparing bare-line equality (as this used to) both missed the
+ * subtable and mistook a foreign section for ours.
+ */
+function tomlHeaderName(line) {
+  const t = line.trim();
+  if (!/^\[/.test(t)) return null;
+  return t.replace(/^\[+\s*/, '').replace(/\s*\]+$/, '');
+}
+
+function ownedTomlHeader(line, sectionPath) {
+  const name = tomlHeaderName(line);
+  if (name === null) return false;
+  return name === sectionPath || name.startsWith(`${sectionPath}.`);
+}
+
+/**
+ * Replace (or append) a whole TOML section, header included.
+ *
+ * Idempotency is the requirement that shapes this: the second run must produce
+ * the same bytes as the first, so the replacement has to consume exactly the
+ * span the previous run wrote — the header, the body, and any owned subtable —
+ * and leave every other byte of someone else's config alone.
+ *
+ * @param {string} text
+ * @param {string} sectionPath  e.g. `mcp_servers.aegis` (no brackets)
+ * @param {string[]} bodyLines  lines AFTER the header; may include own subtables
+ */
 function upsertTomlSection(text, sectionPath, bodyLines) {
   const header = `[${sectionPath}]`;
   const lines = (text || '').split('\n');
@@ -144,24 +199,26 @@ function upsertTomlSection(text, sectionPath, bodyLines) {
   let replaced = false;
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
-    const isHeader = /^\s*\[/.test(line);
-    const isOurs = line.trim() === header;
-    if (isHeader && isOurs) {
-      out.push(...bodyLines, '');
+    if (lines[i].trim() === header) {
+      out.push(header, ...bodyLines, '');
       replaced = true;
       i++;
-      // Skip the old body: everything until the next section header.
+      // Consume the old body, then each subtable we own (the `.env` block),
+      // stopping at the first header that is somebody else's.
       while (i < lines.length && !/^\s*\[/.test(lines[i])) i++;
+      while (i < lines.length && ownedTomlHeader(lines[i], sectionPath)) {
+        i++;
+        while (i < lines.length && !/^\s*\[/.test(lines[i])) i++;
+      }
       continue;
     }
-    out.push(line);
+    out.push(lines[i]);
     i++;
   }
   if (!replaced) {
     while (out.length && out[out.length - 1].trim() === '') out.pop();
     if (out.length) out.push('');
-    out.push(...bodyLines, '');
+    out.push(header, ...bodyLines, '');
   }
   return out.join('\n');
 }
@@ -175,6 +232,12 @@ function removeTomlSection(text, sectionPath) {
     if (lines[i].trim() === header) {
       i++;
       while (i < lines.length && !/^\s*\[/.test(lines[i])) i++;
+      // The `.env` subtable is part of our section, not a section of its own:
+      // leaving it behind would orphan a block of env keys under no header.
+      while (i < lines.length && ownedTomlHeader(lines[i], sectionPath)) {
+        i++;
+        while (i < lines.length && !/^\s*\[/.test(lines[i])) i++;
+      }
       continue;
     }
     out.push(lines[i]);
@@ -309,7 +372,21 @@ function planRemove(target, scope, opts = {}) {
     result.error = err;
     return result;
   }
-  delPath(doc, `${target.container}.${spec.name}`);
+  // Is there anything of ours to remove? Asking first is what makes removal
+  // idempotent AND non-destructive: re-serialising a document we changed
+  // nothing in would rewrite the user's whole file — reformatted, key order
+  // possibly altered — and report it as a change.
+  const entryPath = `${target.container}.${spec.name}`;
+  const hadEntry = getPath(doc, entryPath) !== undefined;
+  const hadInput = Array.isArray(doc.inputs) && doc.inputs.some((e) => e && e.id === 'aegis-api-key');
+  if (!hadEntry && !hadInput) {
+    result.before = text;
+    result.after = text;
+    result.changed = false;
+    return result;
+  }
+
+  delPath(doc, entryPath, true);
   const inputs = Array.isArray(doc.inputs) ? doc.inputs.filter((e) => !(e && e.id === 'aegis-api-key')) : null;
   if (inputs) {
     if (inputs.length) doc.inputs = inputs;
@@ -367,6 +444,60 @@ function apply(plan, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Read back the entry this module would have written, from a TOML section.
+ *
+ * Only the keys `renderEntry` emits are modelled, and a section that is absent
+ * returns null. This is deliberately not a TOML parser: the file belongs to
+ * someone else's editor and the only question asked of it is "is our entry
+ * here, and what does it point at".
+ */
+function parseTomlEntry(text, section) {
+  if (!text) return null;
+  const escaped = section.replace(/[.[\]*+?^$(){}|]/g, '\\$&');
+  const at = new RegExp('^\\s*\\[' + escaped + '\\]\\s*$', 'm').exec(text);
+  if (!at) return null;
+  // The section is a SPAN — the header, its body, and its own subtables — so
+  // the slice has to run to the first header that is NOT ours. Stopping at the
+  // next header of any kind (as this used to) truncated the body before
+  // `[<section>.env]`, which is where `renderEntry` puts every env var: the
+  // parse succeeded and reported an empty env, which is worse than failing.
+  const rest = text.slice(at.index + at[0].length);
+  const lines = rest.split('\n');
+  const body = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (/^\s*\[/.test(lines[i]) && !ownedTomlHeader(lines[i], section)) break;
+    body.push(lines[i]);
+    i++;
+  }
+  const entry = { command: null, args: [], env: {} };
+  const cmd = /^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"/m.exec(body.join('\n'));
+  if (cmd) entry.command = JSON.parse('"' + cmd[1] + '"');
+  const args = /^\s*args\s*=\s*\[([\s\S]*?)\]/m.exec(body.join('\n'));
+  if (args) {
+    entry.args = [...args[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"'));
+  }
+  for (const m of body.join('\n').matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/gm)) {
+    if (m[1] !== 'command' && m[1] !== 'args') entry.env[m[1]] = JSON.parse('"' + m[2] + '"');
+  }
+  return entry;
+}
+
+/**
+ * The script an entry names, if any.
+ *
+ * `spec.js` always writes `command: node` plus an absolute path to
+ * `mcp/server.js`, so the script is the first argument that looks like one. A
+ * user who hand-edited their config to `npx aegiscode-mcp` has no such
+ * argument and gets `null` — "cannot tell", which is honest, not "broken".
+ */
+function entryServerPath(entry) {
+  if (!entry) return null;
+  const args = Array.isArray(entry.args) ? entry.args : [];
+  return args.find((a) => typeof a === 'string' && /\.(js|mjs|cjs)$/.test(a)) || null;
+}
+
+/**
  * Per target+scope: does the config exist, is our entry in it, and does the
  * command it names still exist on disk? The last question is the one that
  * catches a moved checkout — the silent failure this whole module is written
@@ -393,7 +524,8 @@ function status(ids, opts = {}) {
       row.exists = read.exists;
       if (read.exists && read.text !== null) {
         if (target.kind === 'mcp-toml') {
-          row.installed = new RegExp(`^\\s*\\[${target.container.replace('.', '\\.')}\\.${spec.name}\\]`, 'm').test(read.text);
+          row.entry = parseTomlEntry(read.text, `${target.container}.${spec.name}`);
+          row.installed = Boolean(row.entry);
         } else {
           try {
             const doc = parseJson(read.text, file);
@@ -403,6 +535,15 @@ function status(ids, opts = {}) {
             row.error = err.message;
           }
         }
+      }
+      // The question the editor itself never asks: the config still names a
+      // file, but does that file still exist? A checkout that moved, an npm
+      // prefix that changed, or a `git clean` all leave a config that loads
+      // fine and fails silently at tool-call time. Surfaced here so `status`
+      // can say "installed, but pointing at nothing".
+      if (row.installed) {
+        row.serverPath = entryServerPath(row.entry);
+        row.serverExists = row.serverPath ? isFile(row.serverPath) : null;
       }
       rows.push(row);
     }
@@ -465,6 +606,8 @@ module.exports = {
   status,
   detected,
   renderEntry,
+  entryServerPath,
+  parseTomlEntry,
   upsertTomlSection,
   removeTomlSection,
   setPath,
