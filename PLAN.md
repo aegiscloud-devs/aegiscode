@@ -39,6 +39,27 @@ Status:
 - [ ] Phase 16 — desktop parity II/IV: renderer, tools, packaging
 - [ ] Phase 17 — desktop parity III/IV: CLI vendor tree + test sweep
 - [ ] Phase 18 — desktop parity IV/IV: harness re-point + docs
+- [x] Phase 19 — avatar core: xp ledger, level→capabilities, persona schema, event state machine (pure)
+- [ ] Phase 20 — avatar level authority in main + capabilities threaded into turn assembly
+- [ ] Phase 21 — persona → prompt register fragment + `__avatar` settings namespace + IPC/preload
+- [ ] Phase 22 — renderer: layered-SVG avatar, level HUD, customization pane, a11y
+- [ ] Phase 23 — companion behaviours: morning brief, idea log, session reflection (opt-in, level-gated)
+- [ ] Phase 24 — cosmetics format, optional local TTS, docs + release
+- [ ] Phase 25 — identity & profile core: holder resolution, fingerprinting, memory-derived facets (pure)
+- [ ] Phase 26 — holder authority in main: per-holder ledger/persona, memory scope, migration
+- [ ] Phase 27 — profile + register → one bounded prompt fragment (after the rule region)
+- [ ] Phase 28 — holder switching, per-holder HUD, conflict card, "why does it know this"
+- [ ] Phase 29 — per-holder cloud mirror, persona export, per-holder forget, docs + release
+
+> Phases 19–24 are the **avatar / memory-level** workstream. Full spec:
+> `docs/avatar-plan.md`. They intentionally sit *after* the parity refactor
+> (15–18) because the avatar reads the memory path those phases finish moving.
+> `reconcile` will keep picking Phase 15 first — that ordering is correct; do
+> not jump the queue for the avatar.
+>
+> Phases 25–29 are its **identity / personalization** half: memory is the value,
+> so *who holds it* is the key. Full spec: `docs/avatar-identity-plan.md`.
+> They depend on 19 (landed) and 20–21, and inherit the same ordering rule.
 
 ---
 
@@ -939,3 +960,265 @@ plainly which states are no longer reachable and why). `find test desktop/test
 clean; nothing pushed to `origin/main` without the user's say-so. Mark the
 `## Phase 15` heading ✅ with a note that 15–18 shipped as one refactor, and
 check off all four Status lines.
+
+## Phase 19 ✅ — avatar core: xp ledger, level→capabilities, persona schema, event state machine (pure)
+
+Full spec: `docs/avatar-plan.md`. Built ahead of the Phase 15–18 parity queue
+order at the user's explicit direction; the ordering note above still governs
+`reconcile`'s default pick.
+
+Done. Five pure modules, no Electron import anywhere, exactly the shape of
+`lib/sync/*`/`lib/local/*`:
+
+- `desktop/lib/avatar/tiers.js` (35 lines) — the five tier bands (Familiar /
+  Trusted / Companion / Confidant / Archivist), alone in its own module so
+  `xp.js` and `level.js` can both depend on it without a cycle.
+- `desktop/lib/avatar/xp.js` (401 lines) — the append-only ledger and its pure
+  replay (`evaluate`/`derive`). XP is paid only for memory that was retrieved
+  and used (§1.1's table), never for volume; a geometric daily soft-cap
+  (`0.5^(n/20)`) bounds any single day's XP regardless of event count
+  (`SINGLE_DAY_XP_CEILING`, asserted analytically, not sampled); per-turn
+  recall caps and per-source import caps stop a single burst from being a
+  slot machine; level is *derived* by replaying the ledger, never stored, so
+  a hand-edited or buggy ledger line can't inflate a level.
+- `desktop/lib/avatar/level.js` (365 lines) — `capabilities(level)`, the one
+  object the rest of the app is meant to read. Rule zero: a bonus may only be
+  a knob the engine already takes. `approvals.write/shell/network/offDevice`
+  are frozen constants at every level — levelling can never widen blast
+  radius. `carveOuts()`/`assertCarveOuts()`/`verifyInvariants()` sweep the
+  whole level range and fail loudly on any violation (including
+  monotonicity: a higher level can't grant less than a lower one).
+  `applyEnvOverrides()` lets `AEGIS_*` env vars win for automation/CI without
+  ever being able to auto-approve writes/shell/network.
+- `desktop/lib/avatar/events.js` (341 lines) — the companion's state machine
+  (`idle → listening → thinking → reading → writing → running →
+  awaiting-you → celebrating → dozing → error`), driven by signals turn
+  assembly/the approval card/queue progress/sync status already emit. No
+  timers inside (caller passes `tick(now)`); unknown signals are no-ops,
+  never throws, so a future new signal can't crash the avatar.
+- `desktop/lib/avatar/persona.js` (385 lines) — the persona-as-data schema
+  (§3). Validation is repair-oriented: only a non-object input or a
+  from-the-future `schema` is a hard error, everything else coerces to a
+  legal value and is reported in `warnings`. Identity/register text (which
+  feeds Phase 21's prompt fragment) is sanitized at this storage boundary —
+  control characters and line separators stripped, length-capped — as the
+  first of two layers. Voice ids that look like a clone of a real person are
+  refused outright per the spec's non-goal.
+
+Tests (all pure `node --test`-style scripts, no Electron): `test/avatar-xp.test.mjs`,
+`test/avatar-level.test.mjs`, `test/avatar-events.test.mjs`,
+`test/avatar-tiers.test.mjs`, `test/avatar-persona.test.mjs` — 5/5 green.
+`avatar-xp.test.mjs`'s closing fuzz test is the load-bearing one: it throws a
+hostile generator at `evaluate()` and asserts the analytically-derived
+`SINGLE_DAY_XP_CEILING` bound holds regardless of event sequence — the actual
+Phase 19 exit criterion ("no event sequence can pay XP for volume alone"),
+not just the examples anticipated by hand. `avatar-level.test.mjs` sweeps
+`verifyInvariants()` over the full level range and asserts the carve-outs.
+Wired into `desktop/package.json`: `test:avatar-{xp,level,events,tiers,persona}`
+scripts, and `lib/avatar/*.js` added to the `check` sweep (`npm run check`
+green, syntax-checks every file above).
+
+Exit criteria:
+- `node --test` (via the `test:avatar-*` scripts) green across all five
+  modules. ✅
+- A fuzz test proves no event sequence can pay XP for volume alone
+  (`SINGLE_DAY_XP_CEILING` bound, asserted not sampled). ✅
+- `capabilities(level)` carve-outs hold at every level 1–60: writes/shell/
+  network/offDevice approvals never move, `memoryWriteback` never gates,
+  nothing level-gated reaches off-device. ✅
+- `npm run check` clean with the new modules included. ✅
+
+Not yet done (later phases, unblocked by this one): the ledger is not yet
+written by `main.js` (Phase 20), nothing is threaded into turn assembly yet,
+there is no `register.js` prompt fragment or `__avatar` settings namespace
+(Phase 21), and there is no renderer (Phase 22). Nothing in this phase touches
+`main.js`, IPC, or the renderer — it is pure library code only, matching the
+plan's own phase boundary.
+
+---
+
+## Phase 25 ⬜ — identity & profile core: holder resolution and memory-derived facets (pure)
+
+Full spec: `docs/avatar-identity-plan.md` §2 and §4. **Slice 1 of 5** of the
+identity/personalization workstream. Requires Phase 19 (landed); independent of
+20–24, so it can run in parallel with them.
+
+The one-sentence version: `avatar-plan.md` made memory the value, and value is
+meaningless unattributed. This phase builds the two pure modules that decide
+*whose* memory it is and what that holder's memory is allowed to personalise.
+
+**25.1 — `desktop/lib/avatar/identity.js`.** `fingerprint(hash, key)` (caller
+supplies the hash function so the module stays dependency-free and Node-testable)
+and `resolve(signals, registry) → { holderId, source, confidence, displayName,
+conflict }` with the precedence in §2: `explicit` (`AEGIS_AVATAR_HOLDER` /
+persona `identity.holderId`) → `account` (cloud id) → `keyFingerprint` →
+generated `local` id. Plus the registry model (`holders.json`: `{ schema, active,
+holders: [...] }`) with validation and migration hooks, mirroring
+`persona.js`'s `migrate`/`validate`/`load` shape.
+
+**The rules that are actually assertions, not prose:**
+
+- A fingerprint is **not** an identity — a match *proposes* a rebind and returns
+  `conflict`, it never merges two holders silently.
+- `identity.js` only ever receives an already-computed fingerprint. Test that a
+  raw key passed where a fingerprint is expected is rejected **by shape**, and
+  that no returned field can carry 20+ chars of high-entropy hex.
+- The OS user name is a `displayName` hint and can never become a `holderId`.
+
+**25.2 — `desktop/lib/avatar/profile.js`.** `fold({ entries, ledger,
+corrections, now }) → { facets, budget, coldStart }` producing the seven
+evidence-gated facet classes in §4 (`vocabulary`, `language`, `codebase`,
+`decisions`, `openThreads`, `doNotRepeat`, `toneCalibration`). Each facet carries
+`id`, `key`, `value`, `tokens`, `sources: [entryId…]`, `confidence`,
+`firstSeen`/`lastSeen`, and is ordered by `(confidence desc, lastSeen desc,
+id asc)`.
+
+- `FACET_IDS` is a **frozen, closed** list: an unknown facet id throws. There is
+  deliberately no code path that infers identity, health, politics, employer or
+  location — the closure is the proof, not a policy statement.
+- Cold start is **neutral**: no facets ⇒ `coldStart: true` ⇒ empty fragment, an
+  avatar that behaves exactly like an unconfigured install. No guessing a
+  personality from silence.
+- `doNotRepeat` honours negatives at a single observation; every positive facet
+  needs its §4 gate (≥1 correction, ≥5 non-English entries, ≥5 tone samples, …).
+
+**25.3 — The fuzz test.** Extend the Phase 19 fuzz approach: no facet may be
+produced without supporting entries, no facet may cite an entry id outside the
+input holder's id set, and no permutation of the same input may change the
+output bytes. Negative-control each leg (e.g. drop the id-set filter and watch
+the isolation leg go red) before trusting the green.
+
+**Exit criteria.** `node --check` clean on both modules; `desktop/test/avatar-
+identity.test.mjs` and `desktop/test/avatar-profile.test.mjs` green; the fuzz,
+determinism and isolation legs all green *and* red when deliberately broken;
+`node --test desktop/test/avatar-*.test.mjs` still green as a set; no Electron
+import in either module; nothing in `main.js`, IPC or the renderer touched.
+
+---
+
+## Phase 26 ⬜ — holder authority in main: per-holder ledger, persona and memory scope
+
+Full spec: `docs/avatar-identity-plan.md` §1, §3, §5. **Slice 2 of 5.** Requires
+25 and the Phase 20 award hooks.
+
+**26.1 — The layout, written only by main.** Move to
+`<userData>/avatar/holders/<holderId>/{ledger.jsonl,persona.json,profile.json}`
+behind `holders.json`. Main stamps `holder` on every appended row (the renderer
+never supplies it — same reasoning as `persist-gate.js`). Migrate the flat
+`avatar/ledger.jsonl` into the single-holder directory keyed by the key
+fingerprint if one exists, else the generated local id: **move, not copy**, and
+idempotent, so a re-run cannot double a level.
+
+**26.2 — Route the memory paths through the active holder.** `aegis:memorySave`,
+the `memory-queue` flush, `aegis:memoryImport` batching and `aegis:memorySearch`
+all take the active holder: save/import stamp it, search scopes to it
+server-side *and* filters client-side before results reach turn assembly. The
+double filter is deliberate (§3): the server scope is the fix, the client filter
+is the assertion that the fix happened.
+
+**26.3 — State and overrides.** `avatarState` reports the active holder,
+`holders.json` row count, and `conflict` when resolution disagrees.
+`AEGIS_AVATAR_HOLDER` overrides *which* holder is active for CI and can never
+bypass filtering.
+
+**Exit criteria.** A test that raises holder A's level and observes A's recall
+breadth change while B's is untouched; a test that `capabilities(level)` is
+byte-identical across holders at equal level (approval classes included);
+a migration test that is idempotent and leaves the old flat file gone; the
+`AEGIS_AVATAR_HOLDER` override proven to select and not to widen.
+
+---
+
+## Phase 27 ⬜ — profile + register → one bounded prompt fragment, after the rule region
+
+Full spec: `docs/avatar-identity-plan.md` §4, §7. **Slice 3 of 5.** Requires 25
+and 26 (and shares Phase 21's `register.js`).
+
+**27.1 — Assembly.** Emit **one** block — register (≤300 tokens) then profile
+facets (≤900) — appended *after* the engine's safety and tool rules, concatenated
+into turn assembly the way `lib/local/prompt.js` already builds a turn. Budget
+truncation drops whole facets by priority; it never slices mid-sentence.
+
+**27.2 — Neutralization.** A facet value containing "ignore previous
+instructions" (or a delimiter-closing attempt) is emitted as inert, quoted text
+and cannot reach the rule region. Asserted by test, both for profile values and
+for register strings, since both are ultimately user text.
+
+**27.3 — Provenance in the payload.** The fragment carries, alongside the text,
+the facet ids it used, so Phase 28's "why does it know this" surface and the
+existing usage/token accounting need no second source of truth.
+
+**Exit criteria.** Injection attempt does not move the rule region (negative-
+control: remove the neutralizer, leg goes red); over-budget fold truncates by
+facet priority; fragment is empty at cold start and at L1; the fragment's facet
+ids match exactly the facets the fold produced.
+
+---
+
+## Phase 28 ⬜ — holder switching, per-holder HUD and "who is at the keyboard"
+
+Full spec: `docs/avatar-identity-plan.md` §3, §4, §5. **Slice 4 of 5.** Requires
+22 (the avatar surface) and 26.
+
+**28.1 — Switching.** A holder switcher that swaps ledger, persona, profile
+cache and memory scope **together**; nothing survives a switch except
+`holders.json`. Per-holder level HUD (reusing Phase 22's), with the honest held
+state from `avatar-plan.md` §1.4 unchanged.
+
+**28.2 — The conflict card.** When `resolve()` reports a conflict (fingerprint
+match, disagreeing signals), show "who is at the keyboard?" with *keep separate*
+as the default and *rebind* behind an explicit confirm. This is the card that
+makes "a fingerprint is not an identity" load-bearing rather than pedantic.
+
+**28.3 — Why does it know this.** Each facet renders its `sources` as the
+underlying entry text, with a one-click forget that removes the facet **and**
+the entries behind it. Accessibility carries over from Phase 22: the avatar
+stays `aria-hidden` with a text level/facet readout beside it, and
+`prefers-reduced-motion` behaviour is unchanged.
+
+**28.4 — The isolation leg that actually matters.** Drive two holders through
+the **real turn-assembly path** and grep the assembled prompt for holder B's
+marker string. A pure-function test alone would miss a filter applied after the
+wrong cache — the Phase 18 lesson about re-pointed harness legs, applied to
+privacy. Negative-control it by disabling the client-side filter and confirming
+the leg goes red.
+
+**Exit criteria.** Both isolation legs green (pure *and* assembled-prompt) and
+red when broken; switcher never blocks input; reduced-motion and `aria-hidden`
+assertions still pass; `electron-smoke-main.js`'s scroll-hold and interrupt legs
+are unaffected.
+
+---
+
+## Phase 29 ⬜ — per-holder mirror, persona export, per-holder forget, docs & release
+
+Full spec: `docs/avatar-identity-plan.md` §6 and §7. **Slice 5 of 5.** Requires
+26 and 28.
+
+**29.1 — Cross-machine.** Reserved mirror sessions become
+`avatar:ledger:<holderId>` / `avatar:profile:<holderId>` — holder id, not
+fingerprint, so a key rotation does not orphan the mirror. Reconciliation is
+union-by-row-id (the ledger is append-only and `derive()` is order-independent);
+a test feeds both interleavings and asserts the same level. Profiles are
+**never** synced as a blob: facets refold locally from the entries that arrived,
+because a synced conclusion cannot be provenance-checked on the machine that
+receives it.
+
+**29.2 — Export and forget.** Persona export writes `aegis-persona.json` with
+`holderId`, `ledger`, `profile` and all entry text stripped — a persona is
+taste, not memory — asserted by test. Forget removes the holder's directory,
+drops its registry row, and queues a cloud delete scoped to its reserved
+sessions; a test proves holder B's rows survive A's forget. Importing a persona
+creates a new holder by default and **never** imports XP.
+
+**29.3 — Docs and release.** Cross-reference `docs/avatar-plan.md` §1.5/§5 from
+the identity spec, update `docs/product-plan.md` and
+`docs/profitability-plan.md` (restate the free/paid line: cosmetics only, never
+memory, level, recall breadth, approval friction or personalization),
+`desktop/README.md`, and the marketing shots if a holder-visible state changes.
+
+**Exit criteria.** `npm run check` clean repo-wide; full
+`find test desktop/test -name '*.test.mjs'` sweep green; ordering test green;
+export-strips-memory test green; cross-holder survival test green; docs updated;
+`git status` clean; version bumped with release notes. Nothing pushed to
+`origin/main` without the user's say-so.
