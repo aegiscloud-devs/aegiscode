@@ -85,6 +85,12 @@ const { createSettingsStore, isReservedNamespace } = require('./lib/settings.js'
 const sessionStore = require('./lib/sync/sessions.js');
 const memoryQueue = require('./lib/sync/memory-queue.js');
 const persistGate = require('./lib/sync/persist-gate.js');
+// Avatar level authority (Phase 20). The ledger, the replay and the award
+// hooks live here in main — a renderer-held counter is a suggestion, not a
+// fact, the same reasoning persist-gate.js follows. The pure halves
+// (xp.js/level.js/events.js/persona.js) are unchanged and stay IO-free; store.js
+// is the only file in lib/avatar/ that touches a disk.
+const avatarStore = require('./lib/avatar/store.js');
 const windowState = require('./lib/window-state.js');
 const deepLink = require('./lib/deep-link.js');
 const quickLauncherLib = require('./lib/quick-launcher.js');
@@ -349,17 +355,42 @@ async function billingResult(run) {
  * A 402 resolves `{ ok:false, upgrade }` — never thrown, because the fields
  * would not survive the IPC trip — and the entry is left un-stored so the
  * renderer can keep it in the box and point at the subscribe page.
+ *
+ * Phase 20 — level authority. This is the memory path's front door, so it is
+ * the first of the award hooks. Two things happen before the write leaves:
+ *
+ *  1. The entry is *normalised* (store.js `normalizeMemoryEntry`). aegis1
+ *     upserts on `(user_id, id)` and skips any entry without an `id`/`content`,
+ *     so the renderer's bare `{ text, source }` was silently discarded
+ *     server-side — paying XP for a save that never happened would be exactly
+ *     the fake ledger this phase must not ship. A content-addressed id makes
+ *     the save real and idempotent in one move.
+ *  2. Only a save that LANDED pays: `memory.saved` (or `memory.reinforced` /
+ *     `memory.corrected`, classified against the refs this process has seen —
+ *     see store.js `observe`) after the cloud accepted it, and `memory.queued`
+ *     for the offline path. A 402 pays nothing and queues nothing.
+ *
+ * `avatar` is optional: without it the function behaves exactly as before.
  */
-async function saveMemoryWithQueue(aegis, dir, entry) {
+async function saveMemoryWithQueue(aegis, dir, entry, avatar) {
+  const normalized = avatarStore.normalizeMemoryEntry(entry);
   try {
-    return await aegis.memorySave(entry);
+    const result = await aegis.memorySave(normalized);
+    if (avatar && normalized && typeof normalized === 'object') {
+      avatar.awardSave(normalized, { session: normalized.session });
+    }
+    return result;
   } catch (err) {
     const upgrade = upgradeInfo(err);
     if (upgrade) {
+      // Nothing was stored, so nothing is earned — and nothing is queued.
       return { ok: false, queued: 0, saved: 0, upgrade, reason: errorText(err) };
     }
     if (!dir || !entry) throw err;
-    memoryQueue.enqueue(dir, entry);
+    memoryQueue.enqueue(dir, normalized);
+    if (avatar && normalized && typeof normalized === 'object') {
+      avatar.awardQueued(normalized, { session: normalized.session });
+    }
     return { ok: true, queued: true, reason: errorText(err) };
   }
 }
@@ -418,8 +449,16 @@ function quotaFromPayload(data) {
  * The renderer gets counts and a summary string, never the entry bodies:
  * 1000 entries x 2 kB over IPC is pure waste, and the bodies are already
  * either in the cloud or in the queue by the time this resolves.
+ *
+ * Phase 20: each batch that the cloud accepted pays `memory.imported` per
+ * entry, keyed by the import's own source (foreign-memory.js collapses one
+ * source's entries into ONE `import:<source>` session — aegis1 meters distinct
+ * session values — so that value is the right per-source key). The replay caps
+ * a source at 200 paying entries, and store.js caps the lines it writes to the
+ * same number, so a ten-tool import cannot jump ten levels. Entries that fell
+ * back to the local queue are queued events, not imports.
  */
-async function importForeignMemory(aegis, dir, payload) {
+async function importForeignMemory(aegis, dir, payload, avatar) {
   const opts = payload || {};
   const report = foreignMemory.scan({
     sources: opts.sources,
@@ -450,6 +489,12 @@ async function importForeignMemory(aegis, dir, payload) {
     try {
       const data = await aegis.memorySaveBatch(batch);
       saved += (data && data.saved) || batch.length;
+      if (avatar && batch.length) {
+        const first = batch[0] || {};
+        avatar.awardImports(batch, {
+          source: first.session || first.source || 'foreign-import',
+        });
+      }
     } catch (err) {
       // The cap is not an offline failure: don't queue the batch. The entries
       // are still in the foreign stores, so a later scan re-finds them — but a
@@ -462,6 +507,7 @@ async function importForeignMemory(aegis, dir, payload) {
         for (const entry of batch) {
           memoryQueue.enqueue(dir, entry);
           queued += 1;
+          if (avatar) avatar.awardQueued(entry, { session: entry && entry.session });
         }
       }
       errors.push(errorText(err));
@@ -559,7 +605,7 @@ function providerRouteConfigured(engine) {
  * reject), injected by bootstrap() so this module still needs no `electron`
  * import to stay unit-testable.
  */
-function createIpcDispatch(aegis, dir, persistApiKey, openExternal, providerConfigured) {
+function createIpcDispatch(aegis, dir, persistApiKey, openExternal, providerConfigured, avatar) {
   // `providerConfigured` is an injected thunk (bootstrap() passes one that reads
   // the settings store) so this module keeps its no-Electron, unit-testable
   // shape; absent in tests and older call sites, where it reads as "no".
@@ -635,7 +681,7 @@ function createIpcDispatch(aegis, dir, persistApiKey, openExternal, providerConf
         aegis.memorySearch(payload && payload.query, payload && payload.limit)
       ),
     memorySave: (payload) =>
-      saveMemoryWithQueue(aegis, dir, payload && payload.entry),
+      saveMemoryWithQueue(aegis, dir, payload && payload.entry, avatar),
     memoryList: (payload) =>
       normalizeMemoryRead(aegis.memoryList(payload && payload.limit)),
 
