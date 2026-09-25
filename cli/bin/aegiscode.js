@@ -44,7 +44,7 @@ Account:
 Automation:
   aegiscode autonomous help               run queued tasks with no terminal at all
   aegiscode mcp install                   put AEGIS inside VS Code / Cursor / Zed /
-                                          Cline / Windsurf / … (`mcp list` shows them)
+                                          Cline / Windsurf / … ('mcp list' shows them)
   aegiscode mcp status                    which editors are configured, and do they work
   aegiscode mcp shim                      OpenAI-compatible endpoint for clients that
                                           take a base URL but speak no MCP
