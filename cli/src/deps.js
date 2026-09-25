@@ -66,7 +66,7 @@ const autonomousPath = resolveShared(path.join('desktop', 'lib', 'local', 'auton
 
 const { createClient } = require(clientPath);
 const { createTools } = require(toolsPath);
-const { usageTokens } = require(usagePath);
+const { usageTokens, usageBuckets } = require(usagePath);
 const { createLocalEngine } = require(enginePath);
 const { createSettingsStore, isReservedNamespace } = require(settingsPath);
 const { agentRoles, agentRoleLabel } = require(agentsPath);
@@ -80,6 +80,7 @@ module.exports = {
   createClient,
   createTools,
   usageTokens,
+  usageBuckets,
   createLocalEngine,
   createSettingsStore,
   isReservedNamespace,

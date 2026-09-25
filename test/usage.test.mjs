@@ -2,12 +2,18 @@
 /**
  * Unit tests for desktop/renderer/usage.js.
  *
- * This is the display half of the token-accounting contract. The transport half
- * (desktop/lib/local/providers.js normalising Anthropic's split usage into
- * `total_tokens`) is covered in local-providers.test.mjs; what is asserted here
- * is that the renderer can read BOTH wire spellings, so a provider that reports
- * only `input_tokens`/`output_tokens` — which is every Anthropic-compatible
+ * This is the display half of the token-accounting contract: that the renderer
+ * can read BOTH wire spellings, so a provider that reports only
+ * `input_tokens`/`output_tokens` — which is every Anthropic-compatible
  * endpoint — still shows a token count instead of nothing.
+ *
+ * There is no separate transport that normalises usage. This header used to
+ * claim `desktop/lib/local/providers.js` did it and that
+ * `local-providers.test.mjs` covered it; that transport was deleted and
+ * neither file exists, so the claim of coverage was false — and the cache
+ * fields, owned by nobody, went unread on every DeepSeek turn. `usageBuckets`
+ * in this module IS the normaliser, and test/cache-buckets.test.mjs is its
+ * coverage.
  */
 import { createRequire } from 'node:module';
 

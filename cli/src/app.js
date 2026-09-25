@@ -21,7 +21,7 @@
 const readline = require('node:readline');
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
-const { createTools, createClient, usageTokens, buildSystemPrompt } = require('./deps.js');
+const { createTools, createClient, usageTokens, usageBuckets, buildSystemPrompt } = require('./deps.js');
 const { createEngine, HOST_CLASSES, DEFAULT_CLASS, byokNamespace } = require('./engine.js');
 const { GLYPH, VERBS, themeOf, RESET, THEME_TABLE } = require('./theme.js');
 const { LiveRegion, termWidth, w } = require('./screen.js');
@@ -1475,10 +1475,14 @@ function createApp(options = {}) {
         status,
         usage: usage
           ? {
-              input: Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0,
-              output: Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0,
-              cacheRead: Number(usage.cache_read_input_tokens ?? 0) || 0,
-              cacheWrite: Number(usage.cache_creation_input_tokens ?? 0) || 0,
+              // Not re-derived here. `usageBuckets` is the one module both
+              // hosts resolve (deps.js), so the terminal and the GUI cannot
+              // disagree about what a turn consumed — including whether a
+              // provider's cached count sits INSIDE its prompt count
+              // (OpenAI, DeepSeek) or BESIDE it (Anthropic). Reading only the
+              // Anthropic spelling recorded cacheRead: 0 for every DeepSeek
+              // turn, which priced the whole prompt at the miss rate.
+              ...usageBuckets(usage),
               ...(settled != null ? { costUsd: settled } : {}),
             }
           : settled != null
