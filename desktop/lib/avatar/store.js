@@ -45,10 +45,22 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const xp = require('./xp.js');
 const level = require('./level.js');
+const personaModule = require('./persona.js');
 
 /** `<userData>/avatar/ledger.jsonl` — the one path this module owns. */
 const LEDGER_DIR = 'avatar';
 const LEDGER_FILE = 'ledger.jsonl';
+/**
+ * `<userData>/avatar/persona.json` — the persona DOCUMENT (Phase 21).
+ *
+ * It lives here, next to the ledger and not in settings.json, because a persona
+ * is a document rather than a preference: it is imported, exported, hand-edited
+ * and eventually synced per holder (Phase 26), and every one of those paths
+ * wants validation on the way in. The `__avatar` settings namespace holds only
+ * the three switches (lib/settings.js), so a renderer can never write a persona
+ * through the settings surface.
+ */
+const PERSONA_FILE = 'persona.json';
 /** Hex chars of the content fingerprint kept per observed ref. */
 const DIGEST_CHARS = 16;
 
@@ -58,6 +70,10 @@ function avatarHome(dir) {
 
 function ledgerPath(dir) {
   return path.join(avatarHome(dir), LEDGER_FILE);
+}
+
+function personaPath(dir) {
+  return path.join(avatarHome(dir), PERSONA_FILE);
 }
 
 /** Content fingerprint for upsert/correction detection — never stored. */
@@ -183,6 +199,91 @@ function createAvatarStore({ dir, now = () => Date.now(), env = process.env, log
     const t = typeof fields.t === 'number' && fields.t ? fields.t : now();
     const entry = xp.makeEntry(kind, Object.assign({}, fields, { t }), { t });
     return appendLine(entry);
+  }
+
+  /**
+   * Award one event BY NAME, refusing anything `xp.js` does not pay for.
+   *
+   * `award()` above is the internal path: its callers are hooks that already
+   * know which kind they are recording. This is the externally reachable one
+   * (Phase 21's `aegis:avatarAward`), so it is the one that must not be a
+   * generic "write a line into the ledger" bridge: an unknown kind is refused
+   * with a reason rather than written as a zero-XP line, which keeps the ledger
+   * a record of priced events only. `xp` is never accepted from the caller —
+   * it is derived by replay at read time (`state()`), so a renderer cannot
+   * propose a level.
+   */
+  function awardEvent(kind, fields = {}) {
+    const name = typeof kind === 'string' ? kind : '';
+    if (!Object.prototype.hasOwnProperty.call(xp.XP_TABLE, name)) {
+      return { ok: false, reason: `unknown avatar event "${name}"` };
+    }
+    const safe = {};
+    for (const key of ['ref', 'source', 'session', 'turn']) {
+      if (fields && fields[key] != null) safe[key] = String(fields[key]);
+    }
+    const entry = award(name, safe);
+    return { ok: true, kind: name, xp: xp.xpFor(name), entry };
+  }
+
+  // --- persona document (Phase 21) ----------------------------------------
+  // The persona is read and written ONLY here, by main. Both directions run
+  // through persona.js validation, so a hand-edited or imported file is
+  // repaired with warnings rather than trusted, and the identity/register text
+  // it carries is re-sanitized on the way in (the storage boundary) AND on the
+  // way out into a prompt (register.js, the use boundary).
+
+  /**
+   * Read `<userData>/avatar/persona.json`, validated. Never throws: a missing
+   * file is the default persona, an unreadable/corrupt one is the default
+   * persona plus a reported reason — the companion cannot be taken down by a
+   * bad document, the same way a corrupt ledger line cannot.
+   */
+  function readPersona() {
+    let raw = null;
+    let exists = false;
+    let error = null;
+    try {
+      raw = JSON.parse(fs.readFileSync(pFile, 'utf8'));
+      exists = true;
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        error = (err && err.message) || 'unreadable';
+        log(`aegis: could not read ${pFile}: ${error}`);
+      }
+    }
+    const validated = personaModule.validate(raw);
+    return {
+      persona: validated.persona,
+      warnings: validated.warnings ? validated.warnings.slice() : [],
+      exists,
+      error,
+      file: pFile,
+    };
+  }
+
+  /**
+   * Merge a partial persona onto the one on disk and persist it atomically
+   * (tmp + rename, 0600, `mkdir -p`). Returns the same shape as readPersona().
+   *
+   * Write-then-revalidate, in that order: `update()` validates the merge BEFORE
+   * anything touches the filesystem, so a patch that cannot be repaired is
+   * never written over a persona the user already had.
+   */
+  function writePersona(patch) {
+    const current = readPersona();
+    const next = personaModule.update(current.persona, patch);
+    const record = { ...next.persona, schema: personaModule.SCHEMA_VERSION };
+    fs.mkdirSync(path.dirname(pFile), { recursive: true, mode: 0o700 });
+    const tmp = `${pFile}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, pFile);
+    try { fs.chmodSync(pFile, 0o600); } catch {}
+    return {
+      ...readPersona(),
+      warnings: (next.warnings || []).slice(),
+      saved: true,
+    };
   }
 
   /**
