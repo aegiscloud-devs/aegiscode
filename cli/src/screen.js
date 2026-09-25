@@ -224,11 +224,129 @@ const isAltScreen = () => inAlt;
 const enableBracketedPaste = () => process.stdout.write('\x1b[?2004h');
 const disableBracketedPaste = () => process.stdout.write('\x1b[?2004l');
 
-// Mouse button-event tracking (DECSET 1000) + SGR coordinates (1006). Only the
-// alt-screen/overlay path turns these on; disabled on exit so the shell we
-// return to isn't left forwarding raw wheel bytes as input.
-const enableMouseTracking = () => process.stdout.write('\x1b[?1000h\x1b[?1006h');
-const disableMouseTracking = () => process.stdout.write('\x1b[?1000l\x1b[?1006l');
+// Mouse tracking + SGR coordinates. DECSET 1000 is the press/wheel report the
+// click-to-toggle path needs; 1002 adds DRAG reports, without which a
+// drag-to-mark gesture is invisible — the terminal reports the press and the
+// release and nothing in between, so a sweep over three lines arrives as a
+// single-cell marking. The terminal's own selection can't substitute for it:
+// the alt screen has no scrollback for the terminal to select from. Disabled on
+// exit so the shell we return to isn't left forwarding raw wheel bytes as input.
+const enableMouseTracking = () => process.stdout.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+const disableMouseTracking = () => process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l');
+
+// Reverse video, used to paint a mouse marking (text selection) over the
+// already-styled grid: the selected slice keeps its own colors and inverts its
+// background. SELECT_OFF (SGR 27) turns inversion back off for the spans that
+// follow the selection on the same row — paint() only resets attributes at the
+// start of a row, so a leftover inverse would wash out the row's tail.
+const SELECT_ON = '\x1b[7m';
+const SELECT_OFF = '\x1b[27m';
+
+// ── mouse marking (text selection) ─────────────────────────────────────────
+// The TUI owns the alternate screen, so the terminal's own drag-to-select is
+// unreachable — a marking has to be built from the SGR drag stream (events.js)
+// against the grid the last frame painted (chatflow.js keeps it as
+// `frameLines`). All of it is pure and cell-based: coordinates are grid row +
+// CELL column (0-based), never string indices, so wide glyphs and padded rows
+// can't shift the selection off the text the reader is pointing at.
+// Ported from aegiscodex-dev/src/screen.js so both hosts mark identically.
+
+/** Two drag endpoints → the same range in reading order (top-left first). */
+function selectionRange(a, b) {
+  if (a.row < b.row || (a.row === b.row && a.col <= b.col)) {
+    return { startRow: a.row, startCol: a.col, endRow: b.row, endCol: b.col };
+  }
+  return { startRow: b.row, startCol: b.col, endRow: a.row, endCol: a.col };
+}
+
+/**
+ * Clip a span line to the cell range [from, to). Edges are cut on whole code
+ * points via w() — slicing by character index would split a 2-cell glyph and
+ * shift every later column by one. Spans keep their own style, so a marking
+ * across a colored diff block stays colored.
+ */
+function sliceLine(line, from, to) {
+  const out = [];
+  let col = 0;
+  for (const sp of line) {
+    const start = col;
+    col += sp.w;
+    if (col <= from || start >= to) continue;
+    let text = sp.t;
+    let seen = start; // cell column of text[0]
+    if (seen < from) {
+      const drop = from - seen;
+      let acc = 0;
+      let cut = 0;
+      for (const ch of text) {
+        if (acc >= drop) break;
+        acc += w(ch);
+        cut += ch.length;
+      }
+      text = text.slice(cut);
+      seen += acc;
+    }
+    if (seen + w(text) > to) {
+      let acc = 0;
+      let keep = '';
+      for (const ch of text) {
+        const cw = w(ch);
+        if (seen + acc + cw > to) break;
+        keep += ch;
+        acc += cw;
+      }
+      text = keep;
+    }
+    if (text) out.push({ t: text, s: sp.s, w: w(text) });
+  }
+  return out;
+}
+
+/**
+ * The text a marking covers, read as a terminal would copy it: hard newlines
+ * between rows, trailing padding trimmed (rows are padded to the full width,
+ * and nobody wants 200 spaces per line on the clipboard), leading/trailing
+ * blank rows dropped.
+ */
+function selectionText(lines, sel) {
+  const rows = [];
+  for (let r = sel.startRow; r <= sel.endRow; r++) {
+    const line = lines[r] || [];
+    const from = r === sel.startRow ? sel.startCol : 0;
+    const to = r === sel.endRow ? sel.endCol : Infinity;
+    rows.push(sliceLine(line, from, to).map((sp) => sp.t).join('').replace(/[ \t]+$/, ''));
+  }
+  while (rows.length && rows[0] === '') rows.shift();
+  while (rows.length && rows[rows.length - 1] === '') rows.pop();
+  return rows.join('\n');
+}
+
+/**
+ * A copy of `lines` with the marked cells wrapped in reverse video. Rows
+ * outside the range are shared, not cloned — a marking repaints up to ~30x/sec
+ * during a sweep and only the rows it touches should allocate. Each is padded
+ * first so a short row's selection is still painted over the blank cells the
+ * reader dragged across.
+ */
+function applySelection(lines, sel, width) {
+  const out = lines.slice();
+  for (let r = sel.startRow; r <= sel.endRow; r++) {
+    if (r < 0 || r >= out.length) continue;
+    const line = padLine(out[r] || [], width);
+    const from = r === sel.startRow ? sel.startCol : 0;
+    const to = r === sel.endRow ? sel.endCol : width;
+    const mid = sliceLine(line, from, to);
+    if (!mid.length) continue;
+    out[r] = [
+      ...sliceLine(line, 0, from),
+      { t: '', s: SELECT_ON, w: 0 },
+      ...mid,
+      { t: '', s: SELECT_OFF, w: 0 },
+      ...sliceLine(line, to, width),
+    ];
+  }
+  return out;
+}
 
 /**
  * Paint span lines top-aligned and clear the rest of the frame. Used by the
@@ -346,6 +464,13 @@ module.exports = {
   disableBracketedPaste,
   enableMouseTracking,
   disableMouseTracking,
+  // mouse marking (text selection)
+  SELECT_ON,
+  SELECT_OFF,
+  selectionRange,
+  sliceLine,
+  selectionText,
+  applySelection,
   // the live region + sizing (app/bin)
   LiveRegion,
   termWidth,
