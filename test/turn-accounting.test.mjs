@@ -16,10 +16,20 @@
  *      must be marked as one, so a guess is never read as a bill.
  *   3. The rate table resolves by exact id, then longest prefix, and it must
  *      contain the DeepSeek row. Without it every direct DeepSeek turn fell
- *      through to Sonnet's $3.00/$15.00 per M against a real $0.14/$0.28 —
- *      21x the input rate, 54x the output rate — which made the *meter* the
- *      largest single contributor to the apparent cost gap between two
- *      surfaces running identical code.
+ *      through to Sonnet's $3.00/$15.00 per M against a real $0.30/$1.20 —
+ *      which made the *meter* the largest single contributor to the apparent
+ *      cost gap between two surfaces running identical code.
+ *
+ *      The figure this section used to pin, $0.14/$0.28, was wrong too, and
+ *      wrong in the same direction as the bug it was written to catch: it is
+ *      DeepSeek's RETIRED V4-Flash tier, which their pricing page retires in a
+ *      footnote (legacy ids are served by V4.1-Flash and billed at Flash
+ *      prices). A row copied from a mirror of our own table cannot detect that
+ *      the mirror is stale, so these assertions cite the vendor's published
+ *      table. The rates are also TIME-DEPENDENT (peak/off-peak), so every
+ *      figure below is pinned to an explicit instant — an unpinned rate is a
+ *      test that passes in the morning and fails at noon, which is how a suite
+ *      teaches people to ignore it.
  *
  * Plus the contract the renderer has always held and that now extends to
  * money: an unknown count is `null`, never a fabricated `0`.
@@ -44,6 +54,12 @@ function assert(cond, msg) {
 }
 const eq = (a, b, m) => assert(a === b, `${m} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`);
 const close = (a, b, m) => assert(Math.abs(a - b) < 1e-9, `${m} (got ${a}, want ${b})`);
+
+// DeepSeek's peak window is 01:00-04:00 and 06:00-10:00 UTC Monday-Friday;
+// everything else, weekends included, is off-peak at half rate. Every rate
+// figure below is pinned to this instant so the suite cannot be time-flaky.
+// 2026-01-05 is a Monday, asserted below so it cannot rot into a weekend.
+const PEAK = new Date('2026-01-05T02:00:00Z');
 
 // ── 1. the settled charge wins, verbatim ────────────────────────────────────
 {
@@ -81,29 +97,46 @@ const close = (a, b, m) => assert(Math.abs(a - b) < 1e-9, `${m} (got ${a}, want 
   eq(fmtCost(0.0047, true), '$0.0047', 'a settled charge is displayed without one');
 }
 
-// ── 3. the DeepSeek row — the 21x/54x meter bug ─────────────────────────────
+// ── 3. the DeepSeek row — the meter bug ─────────────────────────────────────
 {
-  close(ratesFor('deepseek').input, 0.14, 'DeepSeek input rate is the provider\'s $0.14/M');
-  close(ratesFor('deepseek-v4-flash-0731').output, 0.28, 'a dated DeepSeek id resolves by prefix');
-  close(usageCost({ input: 1_000_000, output: 1_000_000 }, 'deepseek'), 0.42,
-    'DeepSeek: $0.14/M + $0.28/M, not Sonnet\'s $18');
-  const sonnet = usageCost({ input: 1_000_000, output: 1_000_000 }, 'sonnet');
-  const deepseek = usageCost({ input: 1_000_000, output: 1_000_000 }, 'deepseek');
+  eq(PEAK.getUTCDay(), 1, 'the pinned instant is a Monday, so it is inside the peak window');
+  // The vendor's published peak figures (api-docs.deepseek.com/quick_start/pricing).
+  close(ratesFor('deepseek', { at: PEAK }).input, 0.30, 'DeepSeek input rate is the provider\'s $0.30/M at peak');
+  close(ratesFor('deepseek-v4-flash-0731', { at: PEAK }).output, 1.20, 'a dated DeepSeek id resolves by prefix');
+  close(usageCost({ input: 1_000_000, output: 1_000_000 }, 'deepseek', { at: PEAK }), 1.50,
+    'DeepSeek: $0.30/M + $1.20/M, not Sonnet\'s $18');
+  const sonnet = usageCost({ input: 1_000_000, output: 1_000_000 }, 'sonnet', { at: PEAK });
+  const deepseek = usageCost({ input: 1_000_000, output: 1_000_000 }, 'deepseek', { at: PEAK });
   const ratio = sonnet / deepseek;
-  assert(ratio > 40,
-    `pricing DeepSeek at Sonnet rates overstates a turn ${ratio.toFixed(1)}x — the Sonnet fallthrough is back`);
+  assert(ratio > 10,
+    `pricing DeepSeek at Sonnet rates overstates a turn ${ratio.toFixed(1)}x — the Sonnet fall-through is back`);
+  // Off-peak is half, and it is the table that states it rather than the call
+  // site dividing it out.
+  close(usageCost({ input: 1_000_000, output: 1_000_000 }, 'deepseek', {
+    at: new Date('2026-01-05T12:00:00Z'),
+  }), 0.75, 'and off-peak is half price');
 
   // Exact id beats prefix, longest prefix beats shorter, alias beats default.
   close(ratesFor('opus').input, 5, 'the exact id wins');
   close(ratesFor('sonnet-4-5-20250929').input, 3, 'a dated Anthropic id resolves by prefix');
-  close(ratesFor('deepseek-v4-pro').input, 0.14, 'a longer prefix beats the default row');
+  // A longer prefix (or a routing label) must not be shadowed by the family
+  // row: `deepseek-v4-pro` is a pricier model than the flash family.
+  close(ratesFor('deepseek-v4-pro', { at: PEAK }).input, 1.32, 'a longer prefix beats the family row');
   close(ratesFor('').input, 3, 'no model named falls to the default row');
   close(ratesFor('who-knows').input, 3, 'an unplaceable model falls to the default row');
+  // …and falling to the default row must be LABELED, because a placeholder
+  // figure that renders exactly like a measurement is the bug this whole
+  // section exists to prevent.
+  eq(ratesFor('who-knows').basis, 'default', 'an unplaceable model reports the default basis');
+  eq(ratesFor('deepseek-v4-flash-0731', { at: PEAK }).basis, 'prefix', 'a dated id reports its prefix basis');
 
   // Only a NAMED model is priced from the table; an unnamed one is unknown.
-  const named = turnAccounting({ input_tokens: 1000, output_tokens: 100 }, 'deepseek');
+  const named = turnAccounting({ input_tokens: 1000, output_tokens: 100 }, 'deepseek', { at: PEAK });
   eq(named.real, false, 'a named, unpriced turn is still an estimate');
   eq(named.estimated, true, 'a named, unpriced turn is marked an estimate');
+  eq(named.priced, true, 'a placed model is priced from its own row');
+  const unplaced = turnAccounting({ input_tokens: 1000, output_tokens: 100 }, 'who-knows');
+  eq(unplaced.priced, false, 'an unplaced model is flagged as not really priced');
 }
 
 // ── an unknown count is null, never a fabricated figure ─────────────────────

@@ -96,21 +96,27 @@ const eq = (a, b, m) => assert(a === b, `${m} (got ${JSON.stringify(a)}, want ${
 
 // ── the cost consequence, which is the entire point ────────────────────────
 {
-  const missAll = usageCost({ prompt_tokens: 100_000, completion_tokens: 1000 }, 'deepseek');
+  // Pinned to a peak instant: the DeepSeek row is time-dependent, and an
+  // unpinned rate would make this pass before 10:00 UTC and fail after it.
+  const PEAK = new Date('2026-01-05T02:00:00Z');
+  const missAll = usageCost({ prompt_tokens: 100_000, completion_tokens: 1000 }, 'deepseek', { at: PEAK });
   const cached = usageCost(
     { prompt_tokens: 100_000, completion_tokens: 1000, prompt_cache_hit_tokens: 95_000 },
     'deepseek',
+    { at: PEAK },
   );
   assert(cached < missAll, `a cached turn must cost LESS than an uncached one (${cached} vs ${missAll})`);
-  // 5k miss at the input rate + 95k hit at the cache rate + 1k out.
-  const want = (5000 / 1e6) * 0.14 + (95_000 / 1e6) * 0.014 + (1000 / 1e6) * 0.28;
+  // 5k miss at the peak input rate + 95k hit at the vendor's cache-hit rate
+  // ($0.006/M — NOT 0.1x input, the convention aegis1/pricing.py used, which
+  // overstated a hit 2.3x) + 1k out at the peak output rate.
+  const want = (5000 / 1e6) * 0.30 + (95_000 / 1e6) * 0.006 + (1000 / 1e6) * 1.20;
   assert(
     Math.abs(cached - want) < 1e-12,
     `cached cost is the miss rate on the miss alone (got ${cached}, want ${want})`,
   );
   // The regression stated as arithmetic: reading the subset as disjoint charged
   // the 95k hits at the input rate AS WELL, which is strictly more expensive.
-  const doubleBilled = (100_000 / 1e6) * 0.14 + (95_000 / 1e6) * 0.014 + (1000 / 1e6) * 0.28;
+  const doubleBilled = (100_000 / 1e6) * 0.30 + (95_000 / 1e6) * 0.006 + (1000 / 1e6) * 1.20;
   assert(doubleBilled > cached, 'and double-billing is the more expensive reading');
 }
 
