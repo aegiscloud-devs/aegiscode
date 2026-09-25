@@ -929,6 +929,34 @@ async function runSession(host) {
     return msg;
   };
 
+  /**
+   * Append a turn's tool row *before* the still-streaming answer row instead of
+   * after it.
+   *
+   * The answer row is created empty when the turn opens and grows in place as
+   * text streams, while each tool call appends a row of its own. Appending the
+   * tool rows after it left the growing answer ABOVE a run of tool rows: once
+   * the turn outgrew the window, the follow-the-bottom viewport showed only the
+   * newest tool row and the answer the reader was waiting for sat off the top
+   * of the window — "I have to scroll up to read the result". Inserting the
+   * tools ahead of the answer keeps the answer as the last row of the turn, so
+   * the bottom of the screen always holds the thing being waited for.
+   *
+   * `follow` is deliberately not re-applied: the rows this replaces were pushed
+   * with `{ follow: false }`, and a raw append never re-engaged the bottom.
+   *
+   * Known limit: a turn's text is already flattened into one `msg.text` (see
+   * the presenter's `text` hook), so text emitted *before* a tool call can't be
+   * split from text emitted after it. This trades that unrepresentable
+   * interleaving for the answer being on screen.
+   */
+  const pushToolRow = (msg, before) => {
+    const at = before ? transcript.indexOf(before) : -1;
+    if (at < 0) transcript.push(msg);
+    else transcript.splice(at, 0, msg);
+    return msg;
+  };
+
   const note = (text) => push({ role: 'note', text }, { follow: false });
 
   let streamedChars = 0;
@@ -1020,7 +1048,7 @@ async function runSession(host) {
         if (tool.phase === 'run') {
           const n = ++toolSeq;
           const prefix = tool.agent ? `${tool.agent} ▸ ` : '';
-          push(
+          pushToolRow(
             {
               role: 'tool',
               phase: 'run',
@@ -1031,7 +1059,7 @@ async function runSession(host) {
               label: `Running ${n} ${prefix}${toolLabel(tool.name, n)}…`,
               start: Date.now(),
             },
-            { follow: false }
+            msg
           );
         } else if (!resolveToolDone(transcript, tool)) {
           // A host that reports a tool once, after it ran, never opens a
@@ -1041,7 +1069,7 @@ async function runSession(host) {
           // turn silently showed no tool activity at all. Record the finished
           // tool directly instead.
           const n = ++toolSeq;
-          push(
+          pushToolRow(
             {
               role: 'tool',
               phase: 'done',
@@ -1052,7 +1080,7 @@ async function runSession(host) {
               ok: tool.ok,
               label: `Ran ${n} ${tool.agent ? `${tool.agent} ▸ ` : ''}${toolLabel(tool.name, n)}`,
             },
-            { follow: false }
+            msg
           );
         }
         scheduleRender();

@@ -69,6 +69,7 @@ const { maskKey, fmtTokens } = require('./format.js');
 const { pickerEntries } = require('./models.js');
 const { openUrl, URLS } = require('./system.js');
 const { sniffProject, buildAegisMd } = require('./init.js');
+const { upgradeAdvice, latestPublishedVersion } = require('./update.js');
 const {
   AGENT_PRESETS, agentRoles, composeAgentPrompt, composeResearchPrompt, composeDebatePrompt,
 } = require('./agents.js');
@@ -116,6 +117,106 @@ const note = (c, text) => c.push({ role: 'note', text });const panel = (c, lines
 const tip = (c, text) => c.push({ role: 'tip', text });
 const done = (c, text) => c.push({ role: 'done', text });
 const shortCwd = () => process.cwd().split('/').filter(Boolean).pop() || '~';
+
+// ── The multi-agent fan-out (/multi run, /multiyolo, /aegis-multi run) ────────
+//
+// These three commands used to only *compose* text: /multi <task> run and
+// /aegis-multi <task> run printed "Running the task through the pooled brain
+// (single-model — the reference fans it out)" and handed the raw task to
+// c.runPrompt — a single turn, not a fan-out — while /multiyolo printed the
+// paste-ready panel and never executed anything at all, so its `savePermissions
+// ({ defaultMode: 'allow' })` turned YOLO on and then did nothing with it.
+//
+// The reference (aegiscodex-dev) calls `multiData(task, { signal })`, which
+// shells out to aegis-cli (`aegis --print "/multi <task>"`) because the fan-out
+// lives in that binary. This host has no aegis-cli, and a shell-out that fails
+// on every machine without one is not a port — so the real multi-agent runtime
+// here is the engine's own `task` tool (desktop/lib/local/engine.js
+// `runSubagent`: a specialist subagent with its own tool loop, session id and
+// approval card, primed from agents.js). One turn drives it, and the delegation
+// is executed rather than described.
+
+/** The fan-out prompt handed to the engine — the specialists are named so the delegation actually happens. */
+function composeMultiFanoutPrompt(task) {
+  return [
+    'Execute this task as a multi-agent fan-out.',
+    '',
+    `Task: ${task}`,
+    '',
+    `Workspace: ${process.cwd()}`,
+    '',
+    'Use the task tool to delegate the independent parts to specialist subagents, in parallel where they do not depend on each other:',
+    '- reconnaissance first (scanner for secrets/unsafe patterns, analyzer for refactor targets),',
+    '- then design (architect, or planner when the work is a change to existing code),',
+    '- then an implementer subagent to make the change.',
+    'Finally review the result (reviewer subagent), fix what it finds, and verify with the repository\'s real commands.',
+    '',
+    'Return one consolidated report: what each subagent found, the files you changed, the exact commands you ran and their real output, and anything still blocked. No preamble.',
+  ].join('\n');
+}
+
+/**
+ * The this-host `multiData(task, { signal })`. Returns the reference's shape —
+ * `{ result, model, provider }`, `{ cancelled }`, or `{ error }` — so callers
+ * render it through `panels.buildAegisPrint` exactly as the reference does.
+ * `{ error }` is the honest fallback: the caller says why and still hands the
+ * user a paste-ready command instead of pretending the fan-out ran.
+ */
+async function multiData(c, task) {
+  const prompt = composeMultiFanoutPrompt(task);
+  const run = c && c.withWorking ? (fn) => c.withWorking(fn) : (fn) => fn();
+  // A context with no agent loop at all (no ask, no runPrompt) is the one case
+  // this cannot execute — say so rather than returning an empty success.
+  if (!c || (typeof c.ask !== 'function' && typeof c.runPrompt !== 'function')) {
+    return { error: 'No agent loop in this context — the fan-out prompt was composed, not run.' };
+  }
+  try {
+    if (typeof c.ask === 'function') {
+      const res = await run((signal) => c.ask(prompt, { signal }));
+      const text = (res && res.text) || '';
+      if (res && res.interrupted && !text) return { cancelled: true };
+      if (!text) return { error: 'The multi-agent fan-out returned nothing (the turn failed before it could delegate).' };
+      return { result: text, model: (res && res.model) || (c.ctx && c.ctx.model) || null, provider: 'aegis' };
+    }
+    // No captured-answer path: still execute, streamed into the transcript.
+    await run(() => c.runPrompt(prompt));
+    return { streamed: true };
+  } catch (e) {
+    return { error: `ÆGIS multi failed — ${(e && e.message) || e}` };
+  }
+}
+
+/**
+ * Drive one of the three fan-out commands end to end. `yolo` is /multiyolo's
+ * edge: the permission mode is set to allow *and* the task then executes under
+ * it (previously it was set and never used).
+ */
+async function runMultiCommand(c, task, { yolo = false, title = 'ÆGIS Multi' } = {}) {
+  if (yolo) {
+    const rules = loadPermissions();
+    savePermissions({ ...rules, defaultMode: 'allow' });
+    panel(c, panels.buildYolo(c.state(), c.ctx));
+  }
+  note(c, 'Running the multi-agent fan-out — the engine delegates to specialist subagents (headless: this skips aegis-cli\'s own confirmation step).');
+  c.render();
+  const res = await multiData(c, task);
+  if (res.cancelled) { note(c, 'ÆGIS multi cancelled.'); c.render(); return true; }
+  if (res.error) {
+    note(c, res.error);
+    // Unreachable is not the same as useless: hand over the command that runs
+    // it in a real aegis-cli session.
+    panel(c, panels.buildAegisMulti(task, c.ctx));
+    c.render();
+    return true;
+  }
+  if (res.streamed) return true;
+  panel(c, panels.buildAegisPrint(title, res, c.ctx));
+  c.render();
+  return true;
+}
+
+/** /upgrade's advice as panel rows (the advice itself is plain strings). */
+const upgradePanelLines = (lines) => lines.map((l) => [span(C.white, l)]);
 
 /**
  * The pinnable-model list for the class the session is on, fetched fresh.
@@ -1002,7 +1103,13 @@ const COMMANDS = [
         const task = (args._rest || '').trim().replace(/^\S+\s*/, '').trim();
         if (!task) { note(c, `Usage: /agents <role> <task> — roles: ${agentRoles().join(', ')}`); c.render(); return true; }
         if (!AGENT_PRESETS[role]) { note(c, `Unknown agent role "${role}". Roles: ${agentRoles().join(', ')}`); c.render(); return true; }
-        await c.runPrompt(composeAgentPrompt(role, task));
+        const prompt = composeAgentPrompt(role, task);
+        if (c.runPrompt) {
+          await c.runPrompt(prompt);
+          return true;
+        }
+        note(c, `Composed ${role} prompt (${prompt.length} chars) — run in the TUI to send it.`);
+        c.render();
         return true;
       }
       panel(c, panels.buildAgents(c.state(), c.ctx));
@@ -1581,13 +1688,10 @@ const COMMANDS = [
     handler: async (c, args) => {
       const task = (args._rest || args.task || '').trim();
       if (!task) { note(c, 'Usage: /multiyolo <task>'); c.render(); return true; }
-      const rules = loadPermissions();
-      savePermissions({ ...rules, defaultMode: 'allow' });
-      panel(c, panels.buildYolo(c.state(), c.ctx));
-      note(c, 'Composing ÆGIS /multiyolo — run it in aegis-cli (the confirmation prompt works there):');
-      panel(c, panels.buildAegisMulti(task, c.ctx));
-      c.render();
-      return true;
+      // YOLO is the point of this alias: auto-approve, then actually run the
+      // fan-out. Composing the text and stopping (what this used to do) left the
+      // user with an enabled YOLO mode and an unexecuted task.
+      return runMultiCommand(c, task, { yolo: true });
     },
   },
   {
@@ -1637,9 +1741,7 @@ const COMMANDS = [
       if (mode !== 'run' && /\s+run$/i.test(task)) { mode = 'run'; task = task.replace(/\s+run$/i, '').trim(); }
       if (!task) { note(c, 'Usage: /multi <task> [run]'); c.render(); return true; }
       if (mode !== 'run') { panel(c, panels.buildAegisMulti(task, c.ctx)); c.render(); return true; }
-      note(c, 'Running the task through the pooled brain (single-model — the reference fans it out).');
-      await c.runPrompt(task);
-      return true;
+      return runMultiCommand(c, task);
     },
   },
   {
@@ -1648,7 +1750,16 @@ const COMMANDS = [
     handler: async (c, args) => {
       const q = (args._rest || args.question || '').trim();
       if (!q) { note(c, 'Usage: /research <question>'); c.render(); return true; }
-      await c.runPrompt(composeResearchPrompt(q, process.cwd()));
+      const prompt = composeResearchPrompt(q, process.cwd());
+      // Unguarded, `c.runPrompt` made this throw on any context without one
+      // (the command smoke test caught the class of bug; the reference guards
+      // it the same way). Composed-but-unrunnable is reported, not swallowed.
+      if (c.runPrompt) {
+        await c.runPrompt(prompt);
+        return true;
+      }
+      note(c, `Composed research prompt (${prompt.length} chars) — run in the TUI to send it.`);
+      c.render();
       return true;
     },
   },
@@ -1658,7 +1769,13 @@ const COMMANDS = [
     handler: async (c, args) => {
       const topic = (args._rest || args.topic || '').trim();
       if (!topic) { note(c, 'Usage: /debate <topic>'); c.render(); return true; }
-      await c.runPrompt(composeDebatePrompt(topic, c.ctx.model || ''));
+      const prompt = composeDebatePrompt(topic, c.ctx.model || '');
+      if (c.runPrompt) {
+        await c.runPrompt(prompt);
+        return true;
+      }
+      note(c, `Composed debate prompt (${prompt.length} chars) — run in the TUI to send it.`);
+      c.render();
       return true;
     },
   },
@@ -1917,7 +2034,13 @@ const COMMANDS = [
     handler: async (c, args) => {
       const q = (args._rest || args.question || '').trim();
       if (!q) { note(c, 'Usage: /aegis-council <question>'); c.render(); return true; }
-      await c.runPrompt(composeResearchPrompt(`Deliberate as a council and vote on: ${q}`, process.cwd()));
+      const prompt = composeResearchPrompt(`Deliberate as a council and vote on: ${q}`, process.cwd());
+      if (c.runPrompt) {
+        await c.runPrompt(prompt);
+        return true;
+      }
+      note(c, `Composed council prompt (${prompt.length} chars) — run in the TUI to send it.`);
+      c.render();
       return true;
     },
   },
@@ -1944,9 +2067,7 @@ const COMMANDS = [
       if (mode !== 'run' && /\s+run$/i.test(task)) { mode = 'run'; task = task.replace(/\s+run$/i, '').trim(); }
       if (!task) { note(c, 'Usage: /aegis-multi <task> [run]'); c.render(); return true; }
       if (mode !== 'run') { panel(c, panels.buildAegisMulti(task, c.ctx)); c.render(); return true; }
-      note(c, 'Running /multi headless — this skips aegis-cli\'s confirmation step.');
-      await c.runPrompt(task);
-      return true;
+      return runMultiCommand(c, task);
     },
   },
 
