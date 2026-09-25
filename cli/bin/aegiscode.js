@@ -41,11 +41,14 @@ Account:
   aegiscode logout              remove the saved key
   aegiscode key status          show which key is in use and where it came from
 
-Autonomous work queue (no terminal needed — cron/systemd/ssh friendly):
-  aegiscode autonomous add "task"   queue a task to run unattended
-  aegiscode autonomous list         show the queue (--json for machines)
-  aegiscode autonomous proceed      drain every pending task, then exit
-  aegiscode autonomous help         all subcommands and their flags
+Automation:
+  aegiscode autonomous help               run queued tasks with no terminal at all
+  aegiscode mcp install                   put AEGIS inside VS Code / Cursor / Zed /
+                                          Cline / Windsurf / … (`mcp list` shows them)
+  aegiscode mcp status                    which editors are configured, and do they work
+  aegiscode mcp shim                      OpenAI-compatible endpoint for clients that
+                                          take a base URL but speak no MCP
+  aegiscode mcp help                      all subcommands and their flags
 
 Options:
   -m, --model <id>        pin a model id (see /models; default: server choice)
@@ -125,6 +128,17 @@ function parseArgs(argv) {
     // bare `autonomous` is help, not a prompt.
     const sub = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'help';
     opts.command = 'autonomous';
+    opts.commandArg = sub;
+    opts.commandArgv = argv.slice(argv[1] && !argv[1].startsWith('-') ? 2 : 1);
+    argv = [];
+  } else if (head === 'mcp') {
+    // The editor-integration surface, wired exactly like `autonomous` and for
+    // the same reason: everything after `mcp <sub>` is the subcommand's argv
+    // (`--target cursor,zed` is not this parser's flag), so the tail is handed
+    // over untouched. A bare `mcp` is the status report — the question a user
+    // actually has ("is AEGIS in my editors?") — not a prompt and not an error.
+    const sub = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'status';
+    opts.command = 'mcp';
     opts.commandArg = sub;
     opts.commandArgv = argv.slice(argv[1] && !argv[1].startsWith('-') ? 2 : 1);
     argv = [];
@@ -465,6 +479,22 @@ async function main(argv = process.argv.slice(2)) {
   if (opts.command === 'autonomous') {
     const { runQueueCommand } = require('../src/autonomous.js');
     return runQueueCommand(opts.commandArg, opts.commandArgv || [], {
+      json: opts.json,
+      stdin: process.stdin,
+      stdout: process.stdout,
+      stderr: process.stderr,
+    });
+  }
+
+  // The editor-integration surface. Dispatched here rather than among the
+  // account commands because it is not about THIS run: `mcp install` edits files
+  // other programs read, and `mcp serve` / `mcp shim` are long-running
+  // processes that must not be wrapped in a session (they are what an editor
+  // spawns behind a session of its own). Loaded lazily so `--help`,
+  // `--version` and an ordinary prompt never pay for the host registry.
+  if (opts.command === 'mcp') {
+    const { runMcpCommand } = require('../src/mcp.js');
+    return runMcpCommand(opts.commandArg, opts.commandArgv || [], {
       json: opts.json,
       stdin: process.stdin,
       stdout: process.stdout,
