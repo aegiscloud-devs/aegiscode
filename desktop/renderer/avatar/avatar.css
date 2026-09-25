@@ -1,0 +1,260 @@
+/* avatar.css — the avatar's presentation layer (PLAN Phase 22).
+ *
+ * Motion is CSS only, and it is the ONE thing in this phase that can be turned
+ * off wholesale. Two switches do that, deliberately overlapping:
+ *
+ *   1. `data-motion` on the <svg>, set by renderer/avatar/assemble.js from
+ *      `persona.appliesMotion(persona, prefersReducedMotion)` — so the persona
+ *      cannot opt out of the accessibility preference, because the preference
+ *      is an input to that function rather than a competing opinion;
+ *   2. a `prefers-reduced-motion` media query at the bottom, which kills the
+ *      animations even if a stale page or a future edit leaves `data-motion`
+ *      at "full". Belt and braces: the belt is the persona policy, the braces
+ *      are the browser's own preference.
+ *
+ * Nothing here is load-bearing for layout, and nothing here is interactive: the
+ * SVG is `pointer-events: none` so it can never sit between a click and the
+ * control underneath it, and there are no animations on any element the user
+ * types into.
+ */
+
+.avatar-card {
+  position: relative;
+}
+
+.avatar-stage {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
+}
+
+.avatar-stage .avatar-svg {
+  display: block;
+  width: 132px;
+  height: auto;
+  /* The face is decoration: it must never intercept a pointer, a scroll or a
+     drag — the two behaviours Phase 9 protects start as input events. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.avatar-svg[data-size='small'] { width: 96px; }
+.avatar-svg[data-size='medium'] { width: 132px; }
+.avatar-svg[data-size='large'] { width: 176px; }
+
+.avatar-card[data-docked='false'] .avatar-stage { display: none; }
+
+.avatar-readout {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim, #9aa4b2);
+  overflow-wrap: anywhere;
+}
+
+.avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+.avatar-level {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text, #e7edf5);
+}
+
+.avatar-tier {
+  opacity: 0.75;
+}
+
+.avatar-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.avatar-xp-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent, #f0a83c);
+  transition: width 0.4s ease-out;
+}
+
+/* §1.4: a held level is not a normal bar. Marked, and the readout says why. */
+.avatar-xp-fill[data-held='true'] {
+  background: repeating-linear-gradient(45deg, var(--accent, #f0a83c) 0 6px, rgba(255, 255, 255, 0.25) 6px 12px);
+}
+
+.avatar-held {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(240, 168, 60, 0.18);
+  color: var(--accent, #f0a83c);
+}
+
+.avatar-next,
+.avatar-unlock-note,
+.avatar-source-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim, #9aa4b2);
+}
+
+.avatar-expression {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.avatar-pane {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease-out;
+}
+
+.avatar-card[data-pane='open'] .avatar-pane {
+  max-height: 1400px;
+  overflow: visible;
+}
+
+.avatar-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 8px 0 4px;
+}
+
+.avatar-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+
+.avatar-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+  font-size: 12px;
+}
+
+.avatar-label {
+  flex: 0 0 42%;
+  opacity: 0.85;
+}
+
+.avatar-field select,
+.avatar-field input[type='text'],
+.avatar-field input[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.avatar-field input[type='color'] {
+  flex: 0 0 36px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.avatar-value,
+.avatar-field-note {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.avatar-field-note:not(:empty) {
+  color: var(--warn, #f0a83c);
+}
+
+.avatar-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin: 2px 0;
+}
+
+.avatar-pane-status {
+  margin: 6px 0 0;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+/* ── motion ───────────────────────────────────────────────────────────────
+   Three tiers, keyed off the attribute the assembler writes:
+     full    — breathing, blink, sway, sparks
+     reduced — opacity shimmer only (no movement of anything)
+     minimal — nothing at all
+   `prefers-reduced-motion` at the end forces `minimal` behaviour regardless. */
+
+@keyframes avatar-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes avatar-sway {
+  0%, 100% { transform: rotate(-1.1deg); }
+  50% { transform: rotate(1.1deg); }
+}
+
+@keyframes avatar-blink {
+  0%, 92%, 100% { opacity: 1; }
+  95% { opacity: 0.15; }
+}
+
+@keyframes avatar-spark {
+  0% { opacity: 0; transform: translateY(4px); }
+  50% { opacity: 0.9; }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
+
+.avatar-svg[data-motion='full'] .avatar-body,
+.avatar-svg[data-motion='full'] .avatar-head {
+  animation: avatar-breathe 5.5s ease-in-out infinite;
+  transform-origin: 100px 200px;
+}
+
+.avatar-svg[data-motion='full'] .avatar-hairBack,
+.avatar-svg[data-motion='full'] .avatar-hairFront {
+  animation: avatar-sway 7s ease-in-out infinite;
+  transform-origin: 100px 60px;
+}
+
+.avatar-svg[data-motion='full'] .avatar-face {
+  animation: avatar-blink 6.5s steps(1, end) infinite;
+}
+
+.avatar-svg[data-motion='full'] .avatar-effect {
+  animation: avatar-spark 1.6s ease-out infinite;
+}
+
+.avatar-svg[data-motion='reduced'] .avatar-effect {
+  animation: avatar-blink 2.4s ease-in-out infinite;
+}
+
+.avatar-svg[data-motion='minimal'] .avatar-layer,
+.avatar-svg[data-motion='minimal'] .avatar-svg {
+  animation: none !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-svg .avatar-layer,
+  .avatar-xp-fill {
+    animation: none !important;
+    transition: none !important;
+  }
+}
