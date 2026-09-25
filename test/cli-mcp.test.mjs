@@ -168,7 +168,7 @@ describe('list', () => {
 
     for (const id of [
       'vscode', 'vscode-insiders', 'vscodium', 'cursor', 'windsurf', 'cline',
-      'roo', 'zed', 'continue', 'claude-code', 'gemini', 'codex', 'junie', 'opencode',
+      'roo', 'zed', 'continue', 'claude', 'gemini', 'codex', 'junie', 'opencode',
     ]) {
       assert.ok(ids.includes(id), `registry is missing ${id}`);
     }

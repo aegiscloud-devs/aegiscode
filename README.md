@@ -10,6 +10,7 @@ one backend, and you can use any of them without the others.
 | I want to… | Use | Install |
 |---|---|---|
 | Get AEGIS tools inside Claude Code | [Claude Code plugin](#claude-code-plugin) | one-line installer |
+| Get AEGIS tools inside VS Code, Cursor, Zed… | [Editor hosts](#editor-hosts-vs-code-cursor-zed-) | `aegiscode mcp install` |
 | Use a standalone desktop AI app | [AEGIS Desktop](#aegis-desktop-electron) | `npm i -g aegis-desktop` |
 | Embed the transport in my own software | [Shared thin client](#shared-thin-client) | copy `client/aegis.js` |
 
@@ -140,6 +141,101 @@ the provider, the models that key unlocks, and where the vendor issues it.
 |---|---|---|
 | `AEGIS_API_KEY` | — | Your key (required) |
 | `AEGIS_API_BASE` | `https://aegiscloud.org` | Override the backend base URL — useful for self-hosted or staging |
+
+---
+
+## Editor hosts (VS Code, Cursor, Zed, …)
+
+The same stdio MCP server the Claude Code plugin uses is reachable from any
+MCP-capable editor. Nothing else has to be installed: the `aegiscode` CLI
+knows each host's config file, its container key, and its entry shape, and
+writes it for you.
+
+```bash
+npm i -g aegiscode
+
+aegiscode mcp list                  # every supported host + its config path
+aegiscode mcp status                # which are configured, and do they still work
+aegiscode mcp install               # every *detected* editor
+aegiscode mcp install --target vscode --dry-run
+aegiscode mcp remove --target vscode
+```
+
+### Supported hosts
+
+| Host | Config file |
+|---|---|
+| VS Code | `~/.config/Code/User/mcp.json` (or `.vscode/mcp.json` in a project) |
+| VS Code Insiders | `~/.config/Code - Insiders/User/mcp.json` |
+| VSCodium | `~/.config/VSCodium/User/mcp.json` |
+| Cursor | `~/.config/Cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Cline | VS Code `globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` |
+| Roo Code | VS Code `globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json` |
+| Zed | `~/.config/zed/settings.json` |
+| Continue | `~/.continue/config.json` |
+| Gemini CLI | `~/.gemini/settings.json` |
+| Codex CLI | `~/.codex/config.toml` |
+| JetBrains Junie | `~/.junie/mcp/mcp.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| Claude Code | `.mcp.json` (project scope) |
+
+Run `aegiscode mcp list` for the authoritative list — it prints the path for
+*your* OS and the docs link for each host. Junie and OpenCode are the two
+entries marked `verified: false`: their config is written to the documented
+path and shape, but has not been confirmed against the shipping IDE.
+
+### Safe by construction
+
+These files are user-owned; several editors share one JSON blob with unrelated
+settings and other people's MCP servers in it. So:
+
+- **Merge-only, never replace.** Only our own key is touched. Pre-existing
+  servers and unrelated settings are preserved byte-for-byte.
+- **Backup first.** A timestamped copy is written before any change.
+- **Idempotent.** A second `install` reports `already configured` and writes
+  nothing.
+- **Refuses unparseable JSON.** If the file can't be parsed, install exits
+  non-zero and leaves the bytes untouched — it never "repairs" a config by
+  overwriting it.
+- **`--dry-run` writes nothing**, and `mcp print <host>` shows the exact entry
+  without touching disk.
+- **Drift detection.** `mcp status` checks not just whether our entry is
+  present, but whether the server file it names still exists. A config
+  pointing at a moved checkout reports **BROKEN** instead of failing silently
+  inside the editor. A path containing a host variable (`${...}`) is reported
+  as `host-resolved` rather than being mislabelled as missing.
+
+### Keys
+
+No key is written to the config by default. The server resolves it the same way
+every other AEGIS host does — `$AEGIS_API_KEY` → `~/.aegiscode/credentials.json`
+(0600) → `~/.aegiscode/.env`. Editor config files are plain and often
+world-readable, so `--with-key` is opt-in. VS Code users can instead pass
+`--prompt-key` to reference VS Code's own secret prompt, storing no value
+anywhere.
+
+### OpenAI-compatible endpoint
+
+For clients that can't speak MCP but can point at a base URL, the CLI can serve
+the same backend as an OpenAI-compatible API:
+
+```bash
+aegiscode mcp shim            # http://127.0.0.1:8787/v1
+```
+
+`GET /v1/models` and `POST /v1/chat/completions` (streaming and non-streaming,
+with `tools` and `reasoning_effort` passed through). It binds loopback only —
+any non-loopback address additionally requires `--allow-remote`, because the
+endpoint spends the account's tokens.
+
+### Not handled yet
+
+**Named VS Code profiles.** VS Code stores per-profile config under
+`User/profiles/<id>/mcp.json`. The installer writes the *default* profile path
+only, so if you work in a named profile the file lands where your active
+profile won't read it. Use `aegiscode mcp print vscode` and paste the entry
+into your profile's `mcp.json` in the meantime.
 
 ---
 
@@ -355,6 +451,10 @@ const aegis = require('./client/aegis.js');   // Node
 | Saved a memory on one machine, can't find it on another | Confirm both machines use the same AEGIS key, then run `/aegis-status` to force a sync. |
 | Plugin commands missing after install | Restart Claude Code. If they're still missing, re-run `/plugin install aegiscode@aegiscode`. |
 | Desktop app starts but has no models listed | Pick a model class in the picker; if a BYOK provider shows no models, set its key under Settings or in `~/.aegiscode/.env`. |
+| `aegiscode mcp status` says **BROKEN** | The config points at a `mcp/server.js` that no longer exists — usually a moved checkout. Re-run `aegiscode mcp install --target <id>` to repoint it. |
+| `aegiscode mcp install` refuses to write | The target config is not valid JSON/TOML and was left untouched on purpose. Fix the syntax, or back it up and delete it — the installer will not rewrite a file it cannot parse. |
+| AEGIS tools don't show up in a named VS Code profile | Only the default profile path is written today (see [Not handled yet](#not-handled-yet)). Paste the entry from `aegiscode mcp print vscode` into your profile's `mcp.json`. |
+| `aegiscode mcp shim` exits 1 immediately | It binds loopback only. For a non-loopback address, pass `--allow-remote` — the endpoint spends your tokens. |
 
 ---
 
@@ -369,6 +469,7 @@ in the private `ae-guix` product).
 | **Shared thin client** | `client/aegis.js` | Zero-dependency transport to `aegiscloud.org`. The only code in this repo that talks to the backend; runs unchanged under Node (MCP + Electron) and in a browser. |
 | **Claude Code plugin** | `mcp/`, `commands/`, `skills/`, `install.sh`, `.claude-plugin/` | Slash commands + MCP tools inside Claude Code. **Cloud-only** — Claude Code already runs inside a host with its own models. |
 | **AEGIS Desktop** | `desktop/` | Standalone Electron chat app with the three-class model picker, streaming, an agentic tool loop, and cloud sync. Runs without Claude Code. |
+| **Editor hosts** | `hosts/` | Per-editor config knowledge (paths, container keys, entry shapes) plus the merge-only installer, drift checker, and the loopback OpenAI-compatible shim. Driven by `aegiscode mcp …`. |
 
 ### Repository layout
 
@@ -376,6 +477,10 @@ in the private `ae-guix` product).
 client/aegis.js      shared thin transport (MCP + Electron + browser + CLI)
 mcp/server.js        zero-dependency MCP server (Claude Code tools)
 mcp/tools.js         the shared tool registry (MCP host + CLI host)
+hosts/targets.js     editor registry: config paths, container keys, entry shapes
+hosts/install.js     merge-only installer (plan/apply/status/remove) + drift check
+hosts/spec.js        the canonical "run the MCP server" spec every host is built from
+hosts/openai-shim.js loopback OpenAI-compatible endpoint for non-MCP clients
 commands/            Claude Code slash commands
 skills/              Claude Code skills
 install.sh           one-line Claude Code installer
