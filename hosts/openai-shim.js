@@ -396,7 +396,7 @@ async function main(argv) {
     shim = createShimServer(opts);
     await shim.listen();
   } catch (err) {
-    logLine(process.stderr, `aegiscode shim: ${err.message}`);
+    logLine(process.stderr, err.message);
     return 1;
   }
   const stop = async () => { await shim.close(); process.exit(0); };
@@ -411,7 +411,7 @@ if (require.main === module) {
       if (typeof code === 'number') process.exit(code);
     })
     .catch((err) => {
-      logLine(process.stderr, `aegiscode shim: ${err && err.message ? err.message : err}`);
+      logLine(process.stderr, err && err.message ? err.message : err);
       process.exit(1);
     });
 }
