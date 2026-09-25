@@ -201,16 +201,26 @@ function specOptsFor(opts, io) {
   return specOpts;
 }
 
-/** `--scope`, validated against what the target actually supports. */
-function scopeFor(target, opts, io) {
+/**
+ * `--scope`, validated against what the target actually supports.
+ *
+ * `quiet` swallows the "has no X config" message: `--all` and detected sweeps
+ * hit hosts like Claude Code (workspace-only) as a matter of course, and that
+ * is not a failure worth a stderr line — a target named explicitly with
+ * `--target` gets the loud version, because there the mismatch is the whole
+ * ask.
+ */
+function scopeFor(target, opts, io, { quiet = false } = {}) {
   const scope = String(opts.flags.scope || 'user').toLowerCase();
   if (scope !== 'user' && scope !== 'workspace' && scope !== 'project') return null;
   const normalized = scope === 'project' ? 'workspace' : scope;
   if (!(target.scopes || ['user']).includes(normalized)) {
-    io.stderr.write(
-      `aegiscode mcp: ${target.label} has no ${normalized} config — ` +
-        `it supports: ${(target.scopes || ['user']).join(', ')}\n`
-    );
+    if (!quiet) {
+      io.stderr.write(
+        `aegiscode mcp: ${target.label} has no ${normalized} config — ` +
+          `it supports: ${(target.scopes || ['user']).join(', ')}\n`
+      );
+    }
     return null;
   }
   return normalized;
@@ -408,9 +418,15 @@ function runInstall(opts, ctx, io) {
   let failed = 0;
 
   for (const target of sel.targets) {
-    const scope = scopeFor(target, opts, io);
+    const named = sel.source === 'named';
+    const scope = scopeFor(target, opts, io, { quiet: !named });
     if (!scope) {
-      failed++;
+      if (named) {
+        failed++;
+      } else {
+        results.push({ id: target.id, file: null, applied: false, skipped: true });
+        io.stdout.write(`aegiscode mcp: ${target.label} — skipped (no ${String(opts.flags.scope || 'user')} config)\n`);
+      }
       continue;
     }
     const plan = install.planTarget(target, scope, { ctx, specOpts });

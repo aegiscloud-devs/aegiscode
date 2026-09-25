@@ -437,6 +437,18 @@ function createLocalEngine({
   settings,
   tools,
   promptBuilder,
+  // Phase 20 — the level's recall breadth, injected by the host that owns the
+  // avatar ledger (desktop/main.js builds one from lib/avatar/turn.js). It is a
+  // SEAM rather than a call into lib/avatar/* because this engine is shared with
+  // the CLI (cli/src/deps.js loads this file): the engine must not grow a
+  // dependency on the desktop's avatar directory, and a host with no avatar
+  // simply passes nothing and gets the exact pre-Phase-20 turn.
+  //
+  // `recallProvider({ payload, env, system })` may be sync or async and returns
+  // either the final system prompt or `{ system }`. It runs once per turn,
+  // before the first dispatch, and its result is the system prompt every round
+  // of that turn travels with.
+  recallProvider,
   env,
   getConfirmMode,
   // Injectable for tests; defaults to the real transport so every existing

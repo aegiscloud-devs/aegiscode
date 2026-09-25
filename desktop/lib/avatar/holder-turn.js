@@ -156,15 +156,21 @@ function profileFragment(fold, opts = {}) {
  * The recall block: this holder's rows, quoted as inert text, bounded by whole
  * rows. Exported because main.js renders it into the memory pane as well, and
  * one implementation is one thing to get right.
+ *
+ * `opts.header` exists for the one caller that has no holder: Phase 20's turn
+ * assembly recalls the account's memory before any holder exists, and captioning
+ * that block "this holder's memory" would be a lie told in the prompt. The
+ * default stays the holder header, so every holder-scoped caller is unchanged.
  */
 function recallBlock(rows, opts = {}) {
   const maxTokens = Number.isFinite(opts.maxTokens) ? Math.max(0, Math.floor(opts.maxTokens)) : MAX_RECALL_TOKENS;
   const maxRows = Number.isFinite(opts.maxRows) ? Math.max(0, Math.floor(opts.maxRows)) : MAX_RECALL_ROWS;
+  const header = typeof opts.header === 'string' && opts.header ? opts.header : RECALL_HEADER;
   const list = Array.isArray(rows) ? rows.slice(0, maxRows) : [];
   const lines = [];
   const ids = [];
   let redactions = 0;
-  let spent = register.estimateTokens(RECALL_HEADER);
+  let spent = register.estimateTokens(header);
 
   for (const row of list) {
     const raw = row && typeof row === 'object'
@@ -182,7 +188,7 @@ function recallBlock(rows, opts = {}) {
   }
 
   if (!lines.length) return { text: '', tokens: 0, entryIds: [], neutralizations: redactions, dropped: [] };
-  const text = [RECALL_HEADER].concat(lines).join('\n');
+  const text = [header].concat(lines).join('\n');
   const dropped = Math.max(0, list.length - lines.length);
   return { text, tokens: register.estimateTokens(text), entryIds: ids, neutralizations: redactions, dropped: dropped > 0 ? dropped : 0 };
 }
