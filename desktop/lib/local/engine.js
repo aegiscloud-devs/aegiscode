@@ -1532,6 +1532,12 @@ function createLocalEngine({
             statedMaxTokens: opts.statedMaxTokens ? doubledBudget(opts.statedMaxTokens) : undefined,
           });
           addUsage(res);
+          // Same guard as line ~1499, for the same reason: an abort landing
+          // during THIS dispatch also resolves as empty text, and without
+          // this check that "no answer" would fall straight into the
+          // empty-turn nudge below instead of ending the turn — a cancelled
+          // request quietly buying a THIRD billed call.
+          if (signal.aborted) return withTurnUsage(res);
         }
 
         const calls = toolSchemas.length ? extractToolCalls(res) : [];
@@ -1562,6 +1568,12 @@ function createLocalEngine({
             tools: [],
           });
           addUsage(res);
+          // Same guard again: a cancel landing during the synthesis pass
+          // resolves empty too, and without this check it fell through to
+          // emptyTurnError — a real exception, so the renderer painted a red
+          // "no answer" failure over what was actually just the user hitting
+          // Cancel.
+          if (signal.aborted) return withTurnUsage(res);
           if (!assistantText(res)) {
             throw emptyTurnError({
               cls,

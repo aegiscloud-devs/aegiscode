@@ -471,6 +471,72 @@ assert(aborted, 'cancel aborts the in-flight stream');
   assert(occurrences <= 1, `the partial answer is not duplicated (got ${occurrences})`);
 }
 
+// ---- same guard, for the truncation retry itself ---------------------------
+//
+// The check above only covers round 1's own dispatch. A cancel landing during
+// the DOUBLED-BUDGET RETRY (issued because round 1 came back truncated) also
+// resolves as empty text, and without an equivalent guard on that dispatch
+// the empty result fell straight into the empty-turn nudge below — a third
+// billed call for a turn the user had already cancelled.
+{
+  let dispatches = 0;
+  const flaky = {
+    async chatCompletion(args) {
+      dispatches += 1;
+      if (dispatches === 1) {
+        // Truncated: the token budget ran out before any visible text.
+        return { choices: [{ message: { content: '' }, finish_reason: 'length' }] };
+      }
+      // The truncation retry: hang until cancelled, resolving empty exactly
+      // as an aborted request does.
+      return new Promise((resolve) => {
+        const done = () => resolve({ choices: [{ message: { content: '' } }] });
+        if (args.signal.aborted) return done();
+        args.signal.addEventListener('abort', done);
+      });
+    },
+  };
+  const engine4 = aegisEngine(flaky.chatCompletion);
+  const pending3 = engine4.chat({ class: 'aegis', prompt: 'hey', sessionId: 's3' }, () => {});
+  await new Promise((r) => setTimeout(r, 20));
+  engine4.cancel('s3');
+  try { await pending3; } catch { /* either outcome is fine here */ }
+  assert(dispatches === 2, `a cancelled truncation retry stops at 2 dispatches, not 3 (got ${dispatches})`);
+}
+
+// ---- same guard, for the empty-turn nudge ----------------------------------
+//
+// Round 1 can also come back with no text and no tool call WITHOUT being
+// truncated (finish_reason unset) — the nudge path, not the retry path. A
+// cancel landing during that nudge dispatch resolves empty too, and without
+// this guard it fell through to emptyTurnError: a real thrown exception, so
+// the renderer painted a red "the model returned no answer" failure over what
+// was actually just the user pressing Cancel.
+{
+  let dispatches = 0;
+  const flaky2 = {
+    async chatCompletion(args) {
+      dispatches += 1;
+      if (dispatches === 1) {
+        return { choices: [{ message: { content: '' } }] };
+      }
+      return new Promise((resolve) => {
+        const done = () => resolve({ choices: [{ message: { content: '' } }] });
+        if (args.signal.aborted) return done();
+        args.signal.addEventListener('abort', done);
+      });
+    },
+  };
+  const engine5 = aegisEngine(flaky2.chatCompletion);
+  const pending4 = engine5.chat({ class: 'aegis', prompt: 'hey', sessionId: 's4' }, () => {});
+  await new Promise((r) => setTimeout(r, 20));
+  engine5.cancel('s4');
+  let threw = false;
+  try { await pending4; } catch { threw = true; }
+  assert(!threw, 'a cancelled empty-turn nudge resolves clean, not as a thrown emptyTurnError');
+  assert(dispatches === 2, `a cancelled empty-turn nudge stops at 2 dispatches (got ${dispatches})`);
+}
+
 // ---- removed classes are a loud error, not a silent fallback --------------
 //
 // The desktop used to ship five classes (aegis, ollama, openai-compat,
