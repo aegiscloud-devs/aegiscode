@@ -453,6 +453,49 @@ const results = [];
   results.push('tool rows');
 }
 
+// 2b. The answer row must be the turn's LAST row, not its first.
+//
+// The answer row is created empty when the turn opens and grows in place as
+// text streams, while each tool call gets a row of its own. When the tools were
+// appended after the answer, a turn that used more tools than fit the window
+// left the growing answer ABOVE a run of tool rows — so the follow-the-bottom
+// viewport showed only the newest tool row and the result being waited for was
+// off the top of the screen ("I have to scroll up to read the result"). This
+// pins the insertion order that keeps the answer where the reader is looking.
+{
+  const { rows } = await drive(['go\r'], {
+    ask: async (prompt, { presenter }) => {
+      // More tools than the 24-row window can show, so appending them after the
+      // answer would genuinely push it out of view rather than merely down a
+      // line or two.
+      for (let i = 0; i < 12; i++) {
+        presenter.tool({ phase: 'run', name: 'Bash', id: `t${i}`, args: { command: `cmd-${i}` } });
+      }
+      presenter.text('the answer');
+      for (let i = 0; i < 12; i++) {
+        presenter.tool({ phase: 'done', name: 'Bash', id: `t${i}`, elapsed: '1s', ok: true });
+      }
+      return { text: 'the answer' };
+    },
+  });
+  const asstAt = rows.map((r) => r.role).lastIndexOf('assistant');
+  assert(asstAt >= 0, 'the turn has an assistant row');
+  const toolAts = rows.map((r, i) => (r.role === 'tool' ? i : -1)).filter((i) => i >= 0);
+  eq(toolAts.length, 12, 'all twelve tool calls got a row');
+  const stragglers = toolAts.filter((i) => i > asstAt);
+  eq(
+    stragglers.length,
+    0,
+    `no tool row may follow the answer row (found ${stragglers.length} at ${stragglers.join(',')}; answer at ${asstAt})`
+  );
+  eq(
+    rows[asstAt].text,
+    'the answer',
+    'and the answer row is the one carrying the streamed text'
+  );
+  results.push('answer row stays last');
+}
+
 // 3. Esc interrupts a running turn — and must reach the transport.
 {
   let sawSignal = null;

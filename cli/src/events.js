@@ -188,28 +188,45 @@ function feed(c) {
 }
 
 /**
- * SGR mouse event → decoded value. Wheel codes 64/65 decode to 'up'/'down'
- * (modifier bits masked off so Shift+wheel still scrolls). A left button PRESS
- * decodes to `{name:'click', col, row}` with 1-based coordinates from the
- * payload. Everything else — a release (`m`), a drag, another button, or a
- * horizontal wheel — returns null, and the caller's CSI decoder ignores it, so
- * stray mouse bytes can neither type into the editor nor abort a turn.
+ * SGR mouse sequence → a wheel direction ('up'/'down') or a left-button
+ * gesture, with the wire's own 1-based coordinates.
+ *
+ * Button codes: 0/1/2 are left/middle/right, 64/65 are wheel up/down, and bit
+ * 32 (0b100000) marks a motion event — with DECSET 1002 the terminal reports
+ * one per cell of a sweep while the left button is held. Modifier bits (shift
+ * 4, meta 8, ctrl 16) are masked off so Shift+wheel and Shift-click still work.
+ *
+ * A gesture therefore arrives as a triplet and is named stage by stage, so the
+ * caller can tell a click from a marking:
+ *
+ *   press   {name:'click'}    'M', left button, no motion bit
+ *   sweep   {name:'drag'}     'M', left button, motion bit set
+ *   release {name:'release'}  'm' terminator (or the X10-style code 3)
+ *
+ * chatflow.js defers the click to the release, because with 1002 tracking
+ * enabled the SAME press can turn into a drag: acting on 'click' straight away
+ * would toggle an edit block at the start of every text selection swept across
+ * one. Right/middle clicks and anything unrecognized return null, and the
+ * caller then falls through to the ordinary CSI decoder, which ignores it — so
+ * stray mouse bytes can't type into the editor or abort a turn.
+ * Ported from aegiscodex-dev/src/events.js so both hosts mark identically.
  */
 function parseSgrMouse(seq) {
   const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(seq);
   if (!m) return null;
   const code = parseInt(m[1], 10);
-  if (!Number.isFinite(code)) return null;
+  const col = parseInt(m[2], 10);
+  const row = parseInt(m[3], 10);
+  if (!Number.isFinite(code) || !Number.isFinite(col) || !Number.isFinite(row)) return null;
   const base = code & ~0b111100;
   if (base === 64) return 'up';
   if (base === 65) return 'down';
-  // Left press only: button bits 0-1 clear, wheel bits (0b1100000) clear, no
-  // motion bit, and the `M` (press) terminator — a release or drag toggles
-  // nothing.
-  if (m[4] === 'M' && (code & 3) === 0 && (code & 0b1100000) === 0 && (code & 0b100000) === 0) {
-    return { name: 'click', col: parseInt(m[2], 10), row: parseInt(m[3], 10) };
-  }
-  return null;
+  // Code 3 is "no button" — the X10 encoding of a release, which some
+  // terminals and multiplexers still send instead of SGR's `m`.
+  if ((code & 3) === 3 && m[4] === 'M') return { name: 'release', col, row };
+  if ((code & 3) !== 0) return null; // middle/right button — not ours
+  if (m[4] === 'm') return { name: 'release', col, row };
+  return (code & 32) !== 0 ? { name: 'drag', col, row } : { name: 'click', col, row };
 }
 
 function dispatch(key) {

@@ -38,6 +38,7 @@ const {
   enterAltScreen, leaveAltScreen,
   enableBracketedPaste, disableBracketedPaste,
   enableMouseTracking, disableMouseTracking,
+  selectionRange, selectionText, applySelection,
 } = require('./screen.js');
 const {
   KEY, attachKeyStream, nextKey, nextKeyTimeout, requeueKeys, resetKeyStream,
@@ -51,6 +52,7 @@ const fuzzy = require('./fuzzy.js');
 const { fmtTokens, fmtEur, fmtElapsed } = require('./format.js');
 const { editPreview } = require('./diff.js');
 const { renderDiffBlock, defaultOpen } = require('./diffview.js');
+const { copyToClipboard } = require('./clipboard.js');
 
 /** The rotating placeholder shown on an empty input line. */
 const SUGGESTIONS = [
@@ -773,6 +775,15 @@ async function runSession(host) {
   // there. Rebuilt on every frame so it follows scrolling; a click reads it to
   // find which edit block to toggle.
   const clickHits = new Map();
+  // ── mouse marking (text selection) ────────────────────────────────────────
+  // The terminal's own selection can't see the alternate screen, so a drag is
+  // rebuilt here from the SGR stream (events.js) against the grid the last
+  // frame painted. `frameLines` is that grid — kept so selectionText() can read
+  // the cells the reader actually pointed at, not the transcript (which is
+  // re-wrapped, scrolled and clipped differently every frame).
+  let mark = null;          // { anchor:{col,row}, head:{col,row} } — grid, 0-based
+  let pendingClick = null;  // press awaiting its release: a click or a marking
+  let frameLines = [];
   let insertMode = false;
   let hintUntil = 0;
   let hintText = '';
@@ -856,7 +867,12 @@ async function runSession(host) {
     const cols = getSize().cols;
     const { lines, inputCol, rows, inputRow } = buildFrame();
     if (overlay) applyOverlay(lines, rows, cols);
-    paint(lines);
+    // A marking paints over the grid the reader is dragging on; frameLines is
+    // kept for the copy on release (selectionText in screen.js). Assigned from
+    // the UNMARKED lines so the copied text is the text, not the reverse-video
+    // spans applySelection adds.
+    frameLines = lines;
+    paint(mark ? applySelection(lines, selectionRange(mark.anchor, mark.head), cols) : lines);
     lastPaintAt = Date.now();
     if (overlay) {
       hideCursor();
@@ -1312,6 +1328,78 @@ async function runSession(host) {
     return c;
   };
 
+  /**
+   * Toggle the edit block painted on a screen row. Split out of the click
+   * branch so the gesture resolver can call it for a press that never swept a
+   * cell — the click path and the marking path must agree on what a click is.
+   * Returns true when a block was toggled.
+   */
+  const toggleAtRow = (screenRow) => {
+    const msg = clickHits.get(screenRow);
+    if (msg && msg.diff) {
+      msg.diffOpen = !msg.diffOpen;
+      return true;
+    }
+    return false;
+  };
+
+  // ── mouse gestures: click-to-toggle vs. drag-to-mark ──────────────────────
+  // With DECSET 1002 (see screen.js enableMouseTracking) the terminal reports
+  // every cell of a sweep, so the SAME left press can end as a click or as a
+  // text marking — the press alone doesn't say which. The gesture is therefore
+  // resolved on RELEASE:
+  //
+  //   press   → remember the cell; repaint nothing
+  //   drag    → the press became a marking: anchor at the press, follow the
+  //             pointer (the reverse-video paint is the feedback)
+  //   release → marking swept more than one cell? copy it, drop it. Otherwise
+  //             it was a click: toggle the edit block under the press.
+  //
+  // Toggling on the press instead would flip an edit block open and shut as a
+  // side effect of every drag that started inside one — the block would
+  // collapse the moment the reader tried to select its contents.
+  //
+  // Coordinates arrive 1-based on the wire and grid rows are 0-based, hence the
+  // -1 on both axes. Selection is read from `frameLines` (the last painted
+  // grid), NOT the transcript, so the copied cells are the ones the reader
+  // pointed at.
+  const mouseGesture = (key) => {
+    const cell = { col: key.col - 1, row: key.row - 1 };
+    if (key.name === 'click') { pendingClick = cell; return false; }
+    if (key.name === 'drag') {
+      // A drag with no recorded press (the button went down before the stream
+      // was attached, or a multiplexer dropped the press) still marks: DECSET
+      // 1002 only reports motion while a button is held, so the anchor can be
+      // seeded from the report itself.
+      if (mark) mark.head = cell;
+      else mark = { anchor: pendingClick || cell, head: cell };
+      pendingClick = null;
+      return true;
+    }
+    // release
+    const pressed = pendingClick;
+    pendingClick = null;
+    const sel = mark ? selectionRange(mark.anchor, mark.head) : null;
+    // A press that never swept a cell is a click, not a one-character marking:
+    // an unsteady hand shouldn't leave a glyph on the clipboard.
+    const swept = !!sel && !(sel.startRow === sel.endRow && sel.startCol === sel.endCol);
+    mark = null;
+    if (!swept) return toggleAtRow((pressed || cell).row);
+    const text = selectionText(frameLines, sel);
+    if (!text) return true;
+    // Confirm in the transient hint slot (the line the Tab tip uses) rather
+    // than in the transcript: a copy is a UI action, not a turn, and pushing a
+    // note would edit the conversation the reader is copying FROM.
+    const res = copyToClipboard(text);
+    const n = text.split('\n').length;
+    hintText = !res.ok ? 'Copy failed — no clipboard tool available'
+      : res.via === 'file' ? `Marked ${n} line${n === 1 ? '' : 's'} → ${res.path}`
+        : `Copied ${n} line${n === 1 ? '' : 's'}`;
+    hintUntil = Date.now() + 2500;
+    setTimeout(() => { if (Date.now() >= hintUntil) render(); }, 2600);
+    return true;
+  };
+
   // ── live scroll while a turn runs ──
 
   const applyLiveScroll = (key) => {
@@ -1319,17 +1407,16 @@ async function runSession(host) {
     if (key.name === KEY.PAGE_UP) d = +5;
     else if (key.name === KEY.PAGE_DOWN) d = -5;
     else if (key.name === 'wheel') d = key.dir === 'up' ? +3 : -3;
-    else if (key.name === 'click') {
-      // A click on an edit row toggles its diff block. Not a scroll, but the
-      // same "act on the live frame, then repaint" shape — and routing it
-      // through here means it works both at the idle prompt and mid-turn,
-      // since drainWhileWorking feeds this same function.
-      const msg = clickHits.get(key.row);
-      if (msg && msg.diff) {
-        msg.diffOpen = !msg.diffOpen;
-        scheduleRender();
-      }
-      return true; // consumed: a click is never replayed as typed-ahead input
+    // A click mid-turn toggles the same blocks it does when idle, and a drag
+    // marks text mid-turn too: the transcript is already scrollable while the
+    // model works, so it has to stay clickable and markable there — the answer
+    // being streamed is exactly what a reader wants to copy. Resolved through
+    // the shared gesture handler so the click/drag/release triplet can't be
+    // handled two different ways depending on whether a turn happens to run.
+    else if (key.name === 'click' || key.name === 'drag' || key.name === 'release') {
+      if (!mouseGesture(key)) return true; // press: consumed, no repaint
+      scheduleRender();
+      return true;
     }
     else if (key.name === 'char' && ctx.vim && !insertMode && !editor.buf) {
       if (key.ch === 'j') d = +1;
@@ -1762,9 +1849,13 @@ async function runSession(host) {
       await dispatch('/permissions');
       return;
     }
-    if (key.name === 'click') {
-      // Consumed here: it either toggles an edit row's diff block or does
-      // nothing, but must never fall through to the input editor.
+    if (key.name === 'click' || key.name === 'drag' || key.name === 'release') {
+      // Consumed here: it toggles an edit row's diff block or marks/copies
+      // text, but must never fall through to the input editor. Routed through
+      // applyLiveScroll so the idle path and the mid-turn path share one
+      // gesture resolver — handling only 'click' here left a drag-to-mark
+      // silently dropped at the idle prompt (the release fell through to the
+      // editor, which ignored it), so marking only worked mid-turn.
       applyLiveScroll(key);
       return;
     }
