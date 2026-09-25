@@ -61,8 +61,12 @@ const SUGGESTIONS = [
   'create a util logging.py that...',
 ];
 
-/** Terminal title spinner while a turn runs (the reference's frames). */
-const TITLE_SPIN = ['⠐', '⠂', '⠄', '⠆', '⠈', '⠠', '⠰', '⠁'];
+/**
+ * Terminal title spinner while a turn runs (the reference's frames). Owned by
+ * `title.js`, which also derives the topic the title carries; re-exported here
+ * because this module's export list is part of the tested surface.
+ */
+const { TITLE_SPIN, titleText, topicFrom, adoptTopic, titleEnabled, writeTitle } = require('./title.js');
 
 const FRAME_MS = 33; // ~30fps cap for streaming repaints
 
@@ -776,18 +780,30 @@ async function runSession(host) {
   let streamJob = null;
   let streamStartedAt = 0;
   let tabCycle = null;
+  // The terminal title's topic — what this session is about, derived locally
+  // from the user's own prompts (see title.js). Empty until the first ask.
+  let topic = '';
+  let titleBar = true;
+  try {
+    titleBar = titleEnabled(process.env, host.loadConfig ? host.loadConfig() : host.config || {});
+  } catch {
+    titleBar = true;
+  }
 
   // ── rendering ──
   let renderPending = false;
   let lastPaintAt = 0;
 
-  const setTitle = (text, spinning) => {
-    const frame = spinning ? TITLE_SPIN[Math.floor(spinnerFrame / 2) % TITLE_SPIN.length] : '';
-    try {
-      process.stdout.write(`\x1b]0;${frame ? `${frame} ` : ''}${text}\x07`);
-    } catch {
-      /* not a TTY */
-    }
+  /**
+   * Point the terminal title at the session's topic, spinning while a turn
+   * runs. Replaces the static "AEGIS Code" this used to write on every frame:
+   * that left every tab of every session reading identically, which is the one
+   * job a terminal title has.
+   */
+  const setTitle = (spinning) => {
+    if (!titleBar) return;
+    const frame = spinning ? TITLE_SPIN[Math.floor(spinnerFrame / 2) % TITLE_SPIN.length] : null;
+    writeTitle(titleText({ topic, frame }), process.stdout);
   };
 
   const buildFrame = () => {
@@ -961,14 +977,17 @@ async function runSession(host) {
     toolSeq = 0;
     turnTools = [];
     verb = VERBS[turnCount % VERBS.length];
+    // Adopt the ask as this session's topic (kept when it is a follow-up), so
+    // the tab reads what is being worked on from the first frame of the turn.
+    topic = adoptTopic(topic, prompt);
     abort = new AbortController();
     spinnerTimer = setInterval(() => {
       spinnerFrame++;
-      setTitle('AEGIS Code', true);
+      setTitle(true);
       if (spinnerFrame % 3 === 0) render();
     }, 100);
     if (spinnerTimer.unref) spinnerTimer.unref();
-
+    setTitle(true);
     push({ role: 'user', text: prompt });
     const msg = push({ role: 'assistant', text: '', streaming: true });
     let sawReasoning = false;
@@ -1064,7 +1083,7 @@ async function runSession(host) {
       working = false;
       clearInterval(spinnerTimer);
       spinnerTimer = null;
-      setTitle('AEGIS Code', false);
+      setTitle(false);
       const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
       const abortedFlag = !!(abort && abort.signal.aborted);
       msg.text = finalizeTurnText(msg.text, {
@@ -1185,9 +1204,14 @@ async function runSession(host) {
     abort = new AbortController();
     spinnerTimer = setInterval(() => {
       spinnerFrame++;
+      // A slash command that runs long (an export, a compaction) is still this
+      // session working, so the tab spins for it too and keeps the topic it
+      // already had — no prompt here to derive a new one from.
+      setTitle(true);
       if (spinnerFrame % 3 === 0) render();
     }, 100);
     if (spinnerTimer.unref) spinnerTimer.unref();
+    setTitle(true);
     try {
       return await fn(abort.signal);
     } finally {
@@ -1195,6 +1219,7 @@ async function runSession(host) {
       clearInterval(spinnerTimer);
       spinnerTimer = null;
       abort = prev;
+      setTitle(false);
       render();
     }
   };
@@ -1804,7 +1829,11 @@ async function runSession(host) {
       /* not a TTY */
     }
     try {
-      process.stdout.write('\x1b]0;\x07');
+      // Clear the title we wrote, so the shell that gets the terminal back is
+      // not left wearing this app's title. Same OSC 0 writer as every other
+      // title write, so there is exactly one place user text meets the bar —
+      // and skipped entirely when the bar was never ours to write.
+      if (titleBar) writeTitle('', process.stdout);
     } catch {
       /* not a TTY */
     }
@@ -1827,7 +1856,7 @@ async function runSession(host) {
   enterAltScreen();
   clearScreen();
   hideCursor();
-  setTitle('AEGIS Code', false);
+  setTitle(false);
 
   const onResize = () => render();
   if (process.platform !== 'win32') process.on('SIGWINCH', onResize);
