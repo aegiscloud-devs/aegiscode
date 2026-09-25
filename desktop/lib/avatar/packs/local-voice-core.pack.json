@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "local-voice-core",
+  "name": "Local Voice — Core",
+  "kind": "voice",
+  "tier": "free",
+  "unlocks": ["voice.core"],
+  "author": "AEGIS Code",
+  "license": "MIT",
+  "summary": "Three bundled synthetic voices. Local engine only, off until the user turns it on, and nothing is ever sent anywhere to say a sentence.",
+  "items": [
+    { "id": "aegis-neutral", "label": "Neutral", "engine": "local", "consent": "synthetic" },
+    { "id": "aegis-warm", "label": "Warm", "engine": "local", "consent": "synthetic" },
+    { "id": "system-default", "label": "System voice", "engine": "system", "consent": "synthetic" }
+  ]
+}

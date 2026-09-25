@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "core-wardrobe",
+  "name": "Core Wardrobe",
+  "kind": "outfit",
+  "tier": "free",
+  "unlocks": ["outfit.hoodie", "outfit.tshirt"],
+  "author": "AEGIS Code",
+  "license": "MIT",
+  "summary": "The two starter outfits. Yours from level 1, and never sold back to you.",
+  "items": [
+    { "id": "hoodie", "label": "Hoodie", "parts": ["hoodie"] },
+    { "id": "tshirt", "label": "T-shirt", "parts": ["tshirt"] }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "seasonal-winter",
+  "name": "Seasonal Set — Winter",
+  "kind": "outfit",
+  "tier": "paid",
+  "unlocks": ["outfit.seasonal"],
+  "author": "AEGIS Code",
+  "license": "MIT",
+  "summary": "A cosmetic pack. Paid packs sell looks only: this changes how the companion is drawn and nothing about what it can do.",
+  "items": [
+    { "id": "seasonal-winter", "label": "Winter coat", "parts": ["seasonal-winter", "scarf"] }
+  ]
+}
