@@ -210,9 +210,33 @@ function ratesFor(model) {
 }
 
 /**
- * The four billable buckets from a wire usage object, accepting both provider
- * spellings. Cache fields have no Anthropic-compatible short form here because
- * the desktop's transport normalises them (desktop/lib/local/providers.js).
+ * The four billable buckets from a wire usage object, accepting every
+ * provider's spelling of them.
+ *
+ * ── The one thing the providers genuinely disagree about ───────────────────
+ *
+ * Cache fields are not merely spelled differently, they are MEASURED
+ * differently, and the difference is silent:
+ *
+ *   Anthropic   `input_tokens` EXCLUDES `cache_read_input_tokens` and
+ *               `cache_creation_input_tokens` — the buckets are DISJOINT.
+ *   OpenAI      `prompt_tokens` INCLUDES
+ *               `prompt_tokens_details.cached_tokens`.
+ *   DeepSeek    `prompt_tokens` INCLUDES `prompt_cache_hit_tokens` — the
+ *               cached count is a SUBSET of the prompt count.
+ *
+ * Reading a subset pair as though it were disjoint double-bills every cached
+ * token: once at the input rate and again at the cache rate. That is the exact
+ * inverse of the saving caching exists to produce, and it is invisible in the
+ * output — the figure simply comes out larger, and never looks wrong. So the
+ * convention is detected from which field supplied the prompt count, and only
+ * the subset spellings subtract.
+ *
+ * Earlier revisions deferred this to `desktop/lib/local/providers.js`, a file
+ * that does not exist — so nothing normalised these fields and every DeepSeek
+ * turn reported `cacheRead: 0`, pricing its whole prompt at the miss rate.
+ * That is why the convention is resolved here, in the one module both hosts
+ * resolve (cli/src/deps.js), rather than in a transport either could drop.
  *
  * @param {object|null|undefined} usage
  * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number}}
@@ -223,14 +247,36 @@ function usageBuckets(usage) {
     for (const c of candidates) if (typeof c === 'number') return c;
     return 0;
   };
-  const input = num(u.input_tokens, u.prompt_tokens, u.input);
+  const opt = (v) => (typeof v === 'number' ? v : undefined);
+
+  const anthropicIn = opt(u.input_tokens);
+  const openaiIn = opt(u.prompt_tokens);
+  const details = u.prompt_tokens_details;
+  const nested = details && typeof details === 'object' ? opt(details.cached_tokens) : undefined;
+  // DeepSeek's `prompt_cache_hit_tokens`, OpenAI's nested `cached_tokens`, and
+  // the bare `cached_tokens` some OpenAI-compatible gateways emit. All three
+  // are SUBSETS of the prompt count they arrive beside.
+  const subsetHit = num(u.prompt_cache_hit_tokens, nested, u.cached_tokens);
+
+  // Only the OpenAI/DeepSeek spelling names the cache INSIDE the prompt stat.
+  // The Anthropic spelling, and this file's own already-bucketed `{input,...}`
+  // shape (which a ledger row carries), are disjoint — subtracting there would
+  // understate the bill.
+  const subset = anthropicIn === undefined && openaiIn !== undefined;
+  const promptCount = subset ? openaiIn : num(anthropicIn, openaiIn, u.input);
+
+  const cacheReadRaw = num(u.cache_read_input_tokens, u.cacheRead, subsetHit);
+  // Clamp to the prompt it belongs to: a provider over-reporting its hit count
+  // must not be able to produce negative input tokens.
+  const cacheRead = subset ? Math.min(Math.max(0, promptCount), cacheReadRaw) : cacheReadRaw;
+  const cacheWrite = num(u.cache_creation_input_tokens, u.cacheWrite);
   const output = num(u.output_tokens, u.completion_tokens, u.output);
+  const input = subset ? Math.max(0, promptCount - cacheRead) : promptCount;
+
   // A stated total larger than the split means the provider counted tokens the
   // split does not name (thinking, cached reads). Attribute the remainder to
   // input rather than dropping it: dropping it would understate the bill.
   const total = num(u.total_tokens);
-  const cacheRead = num(u.cache_read_input_tokens, u.cacheRead);
-  const cacheWrite = num(u.cache_creation_input_tokens, u.cacheWrite);
   const accounted = input + output + cacheRead + cacheWrite;
   return {
     input: total > accounted ? input + (total - accounted) : input,
