@@ -3,92 +3,36 @@
 /**
  * Token + cost estimation. Tokens are estimated from text length (~4
  * chars/token, the usual rule of thumb) and priced against the per-model rates
- * below. Everything is labeled approximate in the UI.
+ * in the SHARED table. Everything is labeled approximate in the UI.
  *
- * Ported from aegiscodex-dev/src/tokens.js (ESM → CommonJS).
+ * The rate table itself is not here — see the block below.
  */
 
-// Per-million-token USD rates. Cache-read/write matter for long sessions.
+// ── The rate table is NOT defined here ─────────────────────────────────────
 //
-// These are the PROVIDER's rates, for the fallback path where a turn has no
-// server-settled charge (a direct provider, ollama, a custom endpoint). A
-// pooled turn reports the ledger figure instead — see accountingFromUsage's
-// `costUsd` — because the pool's bill carries a margin and a prompt-cache
-// discount this table cannot see.
+// This file used to carry its own copy of `RATES`, and that copy is how the
+// DeepSeek row came to be wrong in one host and right in the other: the table
+// existed twice (here and desktop/renderer/usage.js), so a rate read off the
+// vendor's pricing page reached whichever copy someone happened to edit. The
+// CLI's copy still said $0.14/$0.28 — the retired V4-Flash tier — while the
+// desktop's had been corrected, and `/cost` would have disagreed with the GUI
+// about the same turn on the same engine.
 //
-// Keys are matched by exact id first, then by prefix (ratesFor below), so a
-// family row covers every dated variant of it.
-const RATES = {
-  sonnet:  { input: 3.00, output: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-  default: { input: 3.00, output: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-  fable:   { input: 5.00, output: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
-  opus:    { input: 5.00, output: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
-  // DeepSeek V4 — the provider's published rate, independently corroborated by
-  // aegis1 services/nexus_provider/catalog.py (cost_per_1k_input=0.00014,
-  // cost_per_1k_output=0.00028) and referenced in services/pricing.py.
-  //
-  // This row was MISSING, and usageCost fell through to RATES.sonnet for every
-  // DeepSeek turn: $3.00/$15.00 per M against a real $0.14/$0.28 — 21x the
-  // input rate and 54x the output rate, on every direct DeepSeek call. That is
-  // the number that made a local turn look like it cost a fraction of the
-  // cloud's, when most of the reported gap was the meter itself.
-  //
-  // cacheRead is 0.1x input (aegis1 services/pricing.py
-  // CACHE_READ_FRACTION_BY_COMPANY["deepseek"] = 0.1 -> $0.014/M).
-  // cacheWrite is the input rate: DeepSeek bills a cache write as ordinary
-  // input tokens and charges no separate write premium, unlike Anthropic's
-  // 1.25x. A zero here would understate a session that writes cache.
-  deepseek: { input: 0.14, output: 0.28, cacheRead: 0.014, cacheWrite: 0.14 },
-};
+// So the table lives in exactly one place. `desktop/renderer/usage.js` is
+// already the declared single source of truth for turning a provider's usage
+// object into a display number (cli/src/deps.js resolves it, and
+// test/cli-tools.test.mjs asserts the function identity), so the rates belong
+// there too rather than in a second table that can only drift.
+//
+// `sharedpaths.js` is used rather than `deps.js` because deps.js eagerly
+// requires the engine, the client and the tool registry — pulling all of that
+// in to read a number would be a require cycle for anything in that graph.
+const path = require('node:path');
 
-/**
- * Rate rows a model id may name as a whole word rather than as a prefix.
- * Anthropic spells its family *inside* the id — "claude-opus-4" matches no
- * prefix — so prefix matching alone cannot see it.
- */
-const RATE_FAMILIES = Object.keys(RATES).filter((k) => k !== 'default');
+const { resolveShared } = require('./sharedpaths.js');
+const shared = require(resolveShared(path.join('desktop', 'renderer', 'usage.js')));
 
-/**
- * The rate row for a model id, provider, or alias. Exact id wins, then the
- * longest matching prefix, then a family named inside the id, then the
- * Sonnet-class default — the same resolution order contextWindowFor uses, so
- * the cost meter and the context meter cannot disagree about which family a
- * model belongs to.
- */
-function ratesFor(model) {
-  const raw = String(model || '').toLowerCase();
-  if (!raw) return RATES.default;
-  // `/class byok` selects a "provider:model" id, and the provider half is a
-  // routing label, not a rate: rating it as written fell through every prefix
-  // to RATES.default, so an Opus BYOK turn was priced at Sonnet's $3/$15
-  // against the vendor's real $5/$25.
-  const ids = [raw];
-  const tail = raw.slice(raw.lastIndexOf(':') + 1);
-  if (tail && tail !== raw) ids.push(tail);
-  for (const id of ids) {
-    if (RATES[id]) return RATES[id];
-    let best = null;
-    let bestLen = 0;
-    for (const [prefix, rates] of Object.entries(RATES)) {
-      if (id.startsWith(prefix) && prefix.length > bestLen) {
-        best = rates;
-        bestLen = prefix.length;
-      }
-    }
-    if (best) return best;
-  }
-  // Longest family-key hit wins, so an overlapping pair resolves the same way
-  // twice running rather than by object key order.
-  let family = null;
-  let familyLen = 0;
-  for (const key of RATE_FAMILIES) {
-    if (raw.includes(key) && key.length > familyLen) {
-      family = RATES[key];
-      familyLen = key.length;
-    }
-  }
-  return family || RATES.default;
-}
+const { RATES, RATE_BASIS, UNPRICED_BY_DESIGN, isPeak, ratesFor, costBreakdown } = shared;
 
 // System prompt + tool definitions overhead, roughly, in tokens.
 const SYSTEM_TOKENS = 18000;
@@ -127,11 +71,11 @@ const CONTEXT_WINDOWS = {
 function contextWindowFor(model) {
   const raw = String(model || '').toLowerCase();
   if (!raw) return CONTEXT_WINDOW;
-  // Same two-candidate lookup as ratesFor above, for the same reason: a byok
-  // id ("deepseek:deepseek-v4-flash") carries a routing label in front of the
-  // model, and matching it as written left the 1M-token DeepSeek window reading
-  // as the 200k default — a meter that would have told a user they were at 20%
-  // of a context that was 4% full.
+  // Same two-candidate lookup as ratesFor in the shared table, for the same
+  // reason: a byok id ("deepseek:deepseek-v4-flash") carries a routing label in
+  // front of the model, and matching it as written left the 1M-token DeepSeek
+  // window reading as the 200k default — a meter that would have told a user
+  // they were at 20% of a context that was 4% full.
   const ids = [raw];
   const tail = raw.slice(raw.lastIndexOf(':') + 1);
   if (tail && tail !== raw) ids.push(tail);
@@ -168,14 +112,24 @@ function transcriptUsage(transcript, model = 'sonnet') {
   return { input, output, cacheRead, cacheWrite };
 }
 
-/** Dollar cost of a usage record at the given model's rates. */
-function usageCost(usage, model = 'sonnet') {
-  const r = ratesFor(model);
-  const toD = (n, rate) => (n / 1_000_000) * rate;
-  return toD(usage.input, r.input)
-    + toD(usage.output, r.output)
-    + toD(usage.cacheRead, r.cacheRead)
-    + toD(usage.cacheWrite, r.cacheWrite);
+/**
+ * Dollar cost of a usage record at the given model's rates.
+ *
+ * Returns a number for backward compatibility, but the basis is not lost: use
+ * `costBreakdown` when the caller needs to know whether the figure is real.
+ * (`usageCost` in the shared module, which also folds the record through
+ * `usageBuckets` first — so a wire usage object is normalized identically in
+ * both hosts, where this file's old copy read `usage.input` directly.)
+ *
+ * `model` has no `= 'sonnet'` default here either, and that matters for more
+ * than tidiness: a default parameter in THIS file would re-introduce exactly
+ * the split the shared module just removed, and only on the CLI side — so
+ * `usageCost(u)` would report `basis: 'exact'` in the terminal and
+ * `basis: 'default'` in the GUI for the same turn on the same engine. The
+ * whole point of delegating is that both hosts answer identically.
+ */
+function usageCost(usage, model, opts = {}) {
+  return shared.usageCost(usage, model, opts);
 }
 
 /** Full session accounting: per-bucket tokens, cost, and context used %. */
@@ -186,6 +140,14 @@ function sessionAccounting(transcript, model = 'sonnet') {
   const history = usage.input + usage.output;
   const used = system + tools + history;
   const contextWindow = contextWindowFor(model);
+  // ONE breakdown, not a cost call plus a separate basis call: ratesFor reads
+  // the wall clock for peak/off-peak, so two evaluations straddling a peak
+  // boundary would report a peak cost with an off-peak basis (or vice versa) —
+  // two different claims about the same number, which is the thing this return
+  // shape exists to prevent. aegiscodex-dev's sessionAccounting is written the
+  // same way; if one host folds this into two calls again the two will disagree
+  // about the same turn, which is how the rate table split in the first place.
+  const breakdown = costBreakdown(usage, model);
   return {
     usage,
     system,
@@ -194,7 +156,12 @@ function sessionAccounting(transcript, model = 'sonnet') {
     used,
     contextWindow,
     pct: Math.min(100, Math.round((used / contextWindow) * 100)),
-    cost: usageCost(usage, model),
+    cost: breakdown.cost,
+    // Which rate row priced this. 'default' means the model is unpriced and
+    // `cost` is a Sonnet-class placeholder — surfaced rather than swallowed so
+    // /cost can label it instead of printing a fabricated figure.
+    costBasis: breakdown.basis,
+    costPriced: breakdown.priced,
   };
 }
 
@@ -204,8 +171,9 @@ function sessionAccounting(transcript, model = 'sonnet') {
  * already includes system prompt + tools in cacheRead, so `used` counts
  * input + output + cache instead of re-adding the constants.
  */
-function accountingFromUsage(usage, model = 'sonnet', { exchanges = 0, real = false, costUsd } = {}) {
-  const cost = typeof costUsd === 'number' ? costUsd : usageCost(usage, model);
+function accountingFromUsage(usage, model = 'sonnet', { exchanges = 0, real = false, costUsd, at } = {}) {
+  const breakdown = costBreakdown(usage, model, { at });
+  const cost = typeof costUsd === 'number' ? costUsd : breakdown.cost;
   const used = real
     ? usage.input + usage.output + usage.cacheRead + usage.cacheWrite
     : SYSTEM_TOKENS + TOOL_TOKENS + usage.input + usage.output;
@@ -219,6 +187,12 @@ function accountingFromUsage(usage, model = 'sonnet', { exchanges = 0, real = fa
     contextWindow,
     pct: Math.min(100, Math.round((used / contextWindow) * 100)),
     cost,
+    // A settled charge (costUsd) is the ledger's own truth, so it is 'settled'
+    // rather than a table match — the pool's bill carries a margin and a
+    // prompt-cache discount the table cannot see, so the two must never be
+    // conflated.
+    costBasis: typeof costUsd === 'number' ? 'settled' : breakdown.basis,
+    costPriced: typeof costUsd === 'number' ? true : breakdown.priced,
     exchanges,
     real,
   };
@@ -235,12 +209,16 @@ function fmtCost(d) {
 
 module.exports = {
   RATES,
+  RATE_BASIS,
+  UNPRICED_BY_DESIGN,
+  isPeak,
   SYSTEM_TOKENS,
   TOOL_TOKENS,
   CONTEXT_WINDOW,
   CONTEXT_WINDOWS,
   contextWindowFor,
   ratesFor,
+  costBreakdown,
   estimateTokens,
   transcriptUsage,
   usageCost,

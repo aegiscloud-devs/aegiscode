@@ -143,21 +143,102 @@ const RATES = {
   default: { input: 3.00, output: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
   fable:   { input: 5.00, output: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
   opus:    { input: 5.00, output: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
-  // DeepSeek V4 — the provider's published rate, independently corroborated by
-  // aegis1 services/nexus_provider/catalog.py (cost_per_1k_input=0.00014,
-  // cost_per_1k_output=0.00028) and referenced in services/pricing.py.
+  // Haiku — the same class of hole as the DeepSeek row below, on the provider
+  // whose prices we already thought we knew. The three rows above price Sonnet,
+  // Opus and Fable; a Haiku turn matched no exact key, no prefix
+  // ("claude-haiku-4-5" starts with none of them) and no family name, so it
+  // fell to the Sonnet-class default at 3x its real input and output rate.
   //
-  // This row was MISSING upstream, and usageCost fell through to RATES.sonnet
-  // for every DeepSeek turn: $3.00/$15.00 per M against a real $0.14/$0.28 —
-  // 21x the input rate and 54x the output rate, on every direct DeepSeek call.
+  // $1.00/$5.00 per M (Anthropic's published rate). cacheRead/cacheWrite
+  // follow the convention the three rows above already encode — 0.1x and 1.25x
+  // input — rather than being quoted independently, so the Anthropic rows
+  // cannot drift apart from each other.
+  haiku:   { input: 1.00, output: 5.00, cacheRead: 0.10, cacheWrite: 1.25 },
+  // `claude-haiku-4-5` names its family after the vendor prefix, so the
+  // family-scan fallback (raw.includes(key)) would find it — but only after the
+  // prefix loop, and the prefix `claude` is not a key. Listed explicitly so the
+  // match is EXACT and cannot be reordered away.
+  'claude-haiku': { input: 1.00, output: 5.00, cacheRead: 0.10, cacheWrite: 1.25 },
+
+  // DeepSeek — read off the vendor's own pricing table
+  // (api-docs.deepseek.com/quick_start/pricing), not from a secondary blog and
+  // not from a mirror of our own catalog.
   //
-  // cacheRead is 0.1x input (aegis1 services/pricing.py
-  // CACHE_READ_FRACTION_BY_COMPANY["deepseek"] = 0.1 -> $0.014/M).
+  // The row this replaces said $0.14/$0.28, sourced from aegis1's
+  // catalog.py (cost_per_1k_input=0.00014) and referenced in pricing.py. That
+  // figure is the retired **V4-Flash** tier, and the vendor's own footnote (1)
+  // retires it explicitly: "The legacy names deepseek-v4-flash and
+  // deepseek-v4-flash-vision-exp are still accepted, but the corresponding
+  // models have been retired, their requests are served by the
+  // DeepSeek-V4.1-Flash model and billed at the Flash price." So every legacy
+  // id — which is what the picker advertises and what a user pins — bills at
+  // the V4.1 figures below, ~2.1x the old row.
+  //
+  // The rate is TIME-DEPENDENT (peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri),
+  // so one flat row cannot state the price — it can only state one of the two.
+  // `offPeak` carries the other and ratesFor() picks by the wall clock.
+  //
+  // cacheRead is the CACHE HIT price the vendor quotes directly ($0.006 peak),
+  // not a fraction of input: it is 50x cheaper than input, which is what makes
+  // the cache-hit rate worth measuring at all. Deriving it as 0.1x input — the
+  // convention aegis1/pricing.py used — overstated it 2.3x.
   // cacheWrite is the input rate: DeepSeek bills a cache write as ordinary
-  // input tokens and charges no separate write premium, unlike Anthropic's
-  // 1.25x. A zero here would understate a session that writes cache.
-  deepseek: { input: 0.14, output: 0.28, cacheRead: 0.014, cacheWrite: 0.14 },
+  // input tokens with no write premium, unlike Anthropic's 1.25x.
+  deepseek: {
+    input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30,
+    offPeak: { input: 0.15, output: 0.60, cacheRead: 0.003, cacheWrite: 0.15 },
+  },
+  // DeepSeek-V4-Pro-0813 — a different, pricier model. Longest-prefix matching
+  // keeps it from being shadowed by the `deepseek` family row above.
+  'deepseek-v4-pro': {
+    input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 1.32,
+    offPeak: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
+  },
+  // `deepseek-v4.1-pro` is a spelling the plugin's OWN regex accepts
+  // (DEEPSEEK_REASONING_MODEL_RE: `v4(\.\d+)?-(flash|pro)`), so a config can
+  // carry it and the picker can advertise it. It is listed explicitly because
+  // the prefix loop cannot reach the row above — "deepseek-v4.1-pro" does not
+  // start with "deepseek-v4-pro" — so it fell to the `deepseek` FAMILY row and
+  // a Pro-tier turn was billed at Flash rates.
+  //
+  // Figures are the Pro tier's ($1.32/$3.96 per M), the same tier the tail of
+  // the id names. This is deliberately the DEARER reading: an id that names
+  // "pro" and prices at Flash under-reports spend, which is the direction that
+  // cannot be recovered after the fact. Sources disagree on V4 Pro's current
+  // rate (one registry still carries an August 12 check at $0.435/$0.87), so
+  // treat this row as the one figure here most worth confirming against an
+  // invoice.
+  'deepseek-v4.1-pro': {
+    input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 1.32,
+    offPeak: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
+  },
 };
+
+/**
+ * Is `at` inside DeepSeek's peak window? 01:00-04:00 and 06:00-10:00 UTC,
+ * Monday-Friday. Everything else, weekends included, is off-peak at half rate.
+ *
+ * The vendor also excludes Chinese public holidays, which we do NOT model: the
+ * published table lists them by date, so honouring them would mean shipping a
+ * calendar that goes stale. The consequence is bounded and one-directional —
+ * on a holiday we price at peak (the dearer reading) instead of off-peak — and
+ * over-reporting a spend is recoverable where under-reporting is not.
+ */
+function isPeak(provider, at = new Date()) {
+  if (String(provider || '').toLowerCase().indexOf('deepseek') !== 0) return true;
+  const day = at.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const hour = at.getUTCHours();
+  return (hour >= 1 && hour < 4) || (hour >= 6 && hour < 10);
+}
+
+/** How a model id was matched to a rate row — see ratesFor. */
+const RATE_BASIS = Object.freeze({
+  EXACT: 'exact',
+  PREFIX: 'prefix',
+  FAMILY: 'family',
+  DEFAULT: 'default',
+});
 
 /**
  * The rate rows a model id may name as a whole word rather than as a prefix.
@@ -167,35 +248,122 @@ const RATES = {
 const RATE_FAMILIES = Object.keys(RATES).filter((k) => k !== 'default');
 
 /**
- * The rate row for a model id, provider, or alias. Exact id wins, then the
- * longest matching prefix, then a family named inside the id, then the
- * Sonnet-class default.
+ * Ids this module can be handed that deliberately have NO row, with the reason.
+ *
+ * `test/rate-coverage.test.mjs` fails the build when an id the plugin's own
+ * source routes to resolves to RATE_BASIS.DEFAULT without appearing here. That
+ * is the mechanism that was missing on the day the picker started advertising
+ * DeepSeek: nothing compared "ids we route to" against "ids we have priced", so
+ * the gap had no surface on which to show up as a failure.
+ *
+ * Two honest reasons to be in this list, and no others:
+ *
+ *  - POOLED: aegis1 bills the pool call and reports the settled figure, which
+ *    `turnAccounting` already prefers over anything computed here (its
+ *    `costUsd` branch). A local guess would be a second, worse number printed
+ *    beside the real charge — and for the brain tiers it would also miss the
+ *    fan-out factor (see ID_NOTES in cli/src/models.js: four billed provider
+ *    calls per turn at effort=high, sized by the ask).
+ *  - PROVIDER: a bare provider (`anthropic`, `groq`) is a ROUTING choice — "let
+ *    the pool pick" — not a model. It names no rate because it names no model.
+ *
+ * Anything else belongs in RATES. An entry here is a claim that we have no
+ * business pricing it, not a parking space for a rate we have not looked up.
  */
-function ratesFor(model) {
+const UNPRICED_BY_DESIGN = Object.freeze({
+  // Pooled seats — the ledger carries the charge.
+  'nexus-brain': 'pooled: multi-call fan-out, aegis1 settles the charge',
+  'aegis-brain': 'pooled alias of nexus-brain',
+  'nexus-brain-smart': 'pooled alias of nexus-brain',
+  'nexus-brain-neo': 'pooled alias of nexus-brain',
+  'aegis-brain-smart': 'pooled alias of nexus-brain',
+  'aegis-brain-neo': 'pooled alias of nexus-brain',
+  'openai-gpt4o-mini': 'pooled seat, aegis1 settles the charge',
+  // Bare provider names — a routing choice, not a model.
+  anthropic: 'provider name, not a model id',
+  openai: 'provider name, not a model id',
+  groq: 'provider name, not a model id',
+  google: 'provider name, not a model id',
+  xai: 'provider name, not a model id',
+});
+
+/**
+ * The rate row for a model id, plus HOW it was matched.
+ *
+ * `basis` is the whole point of the return shape. This used to be
+ * `return family || RATES.default` — a bare row — so an id nobody had priced
+ * (DeepSeek, until this change; Haiku too) was silently priced at Sonnet's
+ * $3/$15 and rendered as though it were a measurement. A wrong number that
+ * announces itself is a bug report; a wrong number that looks like every other
+ * number is a fabrication, and it survived because nothing downstream could
+ * tell the two apart.
+ *
+ * So the fallback still exists — a caller needs *a* number to render — but it
+ * is now labeled: `basis: 'default'` means "we do not know this model's price
+ * and this figure is a Sonnet-class placeholder". Callers that display money
+ * are expected to say so, and test/rate-coverage.test.mjs fails the build when
+ * a model the plugin can actually route to lands here.
+ *
+ * @param {string} model  a model id, provider name, alias, or "provider:model"
+ * @param {{at?: Date}} [opts]  the instant to price against, for peak/off-peak
+ * @returns {object} the row ({input,output,cacheRead,cacheWrite}) plus `basis`,
+ *   `peak`, and the `model` it resolved from.
+ */
+function ratesFor(model, { at } = {}) {
   const raw = String(model || '').toLowerCase();
-  if (!raw) return RATES.default;
+  const finish = (row, basis) => {
+    const provider = raw.indexOf('deepseek') === 0 || raw.indexOf(':deepseek') > -1
+      ? 'deepseek'
+      : raw;
+    const peak = isPeak(provider, at || new Date());
+    // Off-peak rows are half of peak by construction, but read them from the
+    // table rather than dividing, so a future discount that is NOT exactly half
+    // is expressed where the numbers live instead of in arithmetic here.
+    const use = !peak && row.offPeak ? { ...row, ...row.offPeak } : row;
+    return { ...use, basis, peak, model: raw };
+  };
+  if (!raw) return finish(RATES.default, RATE_BASIS.DEFAULT);
+
   // A byok model id carries its provider as a routing label:
   // "anthropic:claude-opus-4", "deepseek:deepseek-v4-flash". The label is not
   // a rate, and rating it as written fell through every prefix to
   // RATES.default — so an Opus BYOK turn was priced at Sonnet's $3/$15 against
   // the vendor's real $5/$25. 15x, on the one class whose figure can only ever
   // be an estimate, because there the vendor bills the caller and AEGIS only
-  // relays. Try the whole id first, then the model behind the label.
+  // relays.
+  //
+  // Precedence is by MATCH QUALITY first and candidate second, not
+  // candidate-first: matching candidate-by-candidate let the label `deepseek`
+  // prefix-match the family row before the tail was ever considered, so a
+  // `deepseek:deepseek-v4-pro` turn was priced at Flash rates — the routing
+  // label beating the model it labels. So: try every candidate as an exact id,
+  // then every candidate as a prefix.
   const ids = [raw];
-  const tail = raw.slice(raw.lastIndexOf(':') + 1);
+  // The routing label is separated by ':' in a byok id ("anthropic:claude-opus-4")
+  // and by '/' in the ids the PLATFORM advertises ("deepseek/deepseek-v4-flash"
+  // — see test/cli-tools.test.mjs, test/mcp-balance.test.mjs). Splitting only on
+  // ':' left the slash form resolving its whole string as one id, so
+  // "deepseek/deepseek-v4-pro" never reached the tail and prefix-matched the
+  // `deepseek` FAMILY row — the pro model priced at Flash rates, the same
+  // label-shadowing bug the ':' form had, in the spelling that is actually
+  // shipped.
+  const sep = Math.max(raw.lastIndexOf(':'), raw.lastIndexOf('/'));
+  const tail = raw.slice(sep + 1);
   if (tail && tail !== raw) ids.push(tail);
   for (const id of ids) {
-    if (RATES[id]) return RATES[id];
-    let best = null;
-    let bestLen = 0;
+    if (RATES[id]) return finish(RATES[id], RATE_BASIS.EXACT);
+  }
+  let best = null;
+  let bestLen = 0;
+  for (const id of ids) {
     for (const [prefix, rates] of Object.entries(RATES)) {
-      if (id.startsWith(prefix) && prefix.length > bestLen) {
+      if (prefix !== 'default' && id.startsWith(prefix) && prefix.length > bestLen) {
         best = rates;
         bestLen = prefix.length;
       }
     }
-    if (best) return best;
   }
+  if (best) return finish(best, RATE_BASIS.PREFIX);
   // Longest family-key hit wins, so an overlapping pair resolves the same way
   // twice running rather than by object key order.
   let family = null;
@@ -206,7 +374,7 @@ function ratesFor(model) {
       familyLen = key.length;
     }
   }
-  return family || RATES.default;
+  return finish(family || RATES.default, family ? RATE_BASIS.FAMILY : RATE_BASIS.DEFAULT);
 }
 
 /**
@@ -286,15 +454,47 @@ function usageBuckets(usage) {
   };
 }
 
-/** Dollar cost of a usage record at the given model's rates (USD, estimate). */
-function usageCost(usage, model = 'sonnet') {
-  const r = ratesFor(model);
+/**
+ * Dollar cost of a usage record at the given model's rates, with the
+ * provenance attached.
+ *
+ * `basis === 'default'` means the model was not priced and `cost` is a
+ * Sonnet-class placeholder — the one state the old code could not express.
+ *
+ * `model` deliberately has NO `= 'sonnet'` default parameter, which is a
+ * behaviour change worth stating: the old signature was `model = 'sonnet'`, so
+ * `costBreakdown(u, undefined)` substituted the alias and reported
+ * `basis: 'exact'` — "this model's real rate" — while `costBreakdown(u, '')`
+ * (and `ratesFor(undefined)`) reported `basis: 'default'` — "we do not know
+ * this model". The two spellings produced the SAME money, because
+ * RATES.default and RATES.sonnet are numerically identical, but two different
+ * labels for the same number is the exact ambiguity this return shape exists to
+ * remove. So an unspecified model now flows to the default row and says so.
+ * The money is unchanged; only the claim about it is.
+ *
+ * @param {object} usage  a wire usage object or a stored bucket row
+ * @param {string} model  the model id that answered
+ * @param {{at?: Date}} [opts]  the instant to price against (peak/off-peak)
+ * @returns {{cost: number, basis: string, peak: boolean, model: string, priced: boolean}}
+ */
+function costBreakdown(usage, model, opts = {}) {
+  const r = ratesFor(model, opts);
   const u = usageBuckets(usage);
-  const toD = (n, rate) => (n / 1_000_000) * rate;
-  return toD(u.input, r.input)
+  const toD = (n, rate) => (Math.max(0, Number(n) || 0) / 1_000_000) * rate;
+  const cost = toD(u.input, r.input)
     + toD(u.output, r.output)
     + toD(u.cacheRead, r.cacheRead)
     + toD(u.cacheWrite, r.cacheWrite);
+  return { cost, basis: r.basis, peak: r.peak, model: r.model, priced: r.basis !== RATE_BASIS.DEFAULT };
+}
+
+/**
+ * Dollar cost of a usage record at the given model's rates (USD, estimate).
+ * See `costBreakdown` for why an unnamed model reports `default` rather than
+ * silently claiming Sonnet's row as an exact match.
+ */
+function usageCost(usage, model, opts = {}) {
+  return costBreakdown(usage, model, opts).cost;
 }
 
 /**
@@ -320,13 +520,19 @@ function turnAccounting(usage, model, opts = {}) {
     ? opts.costUsd
     : (typeof u.costUsd === 'number' ? u.costUsd : undefined);
   if (typeof settled === 'number') {
-    return { tokens, cost: settled, real: true, estimated: false };
+    // The ledger's own figure. `basis: 'settled'` rather than a table match,
+    // because a settled charge is a fact and a table match is a guess — and the
+    // pool's bill carries a margin and a prompt-cache discount this table
+    // cannot see, so the two must never be averaged or confused.
+    return { tokens, cost: settled, real: true, estimated: false, basis: 'settled', priced: true };
   }
-  if (tokens == null) return { tokens, cost: null, real: false, estimated: false };
-  const priced = usageCost(u, model);
-  // A model the table cannot place is still priced at the Sonnet-class default
-  // (ratesFor never returns nothing), so this is always an estimate.
-  return { tokens, cost: priced, real: false, estimated: true };
+  if (tokens == null) return { tokens, cost: null, real: false, estimated: false, basis: null, priced: false };
+  const b = costBreakdown(u, model, opts);
+  // A model the table cannot place still yields a number (ratesFor never
+  // returns nothing), so this is always an estimate — but `priced: false` says
+  // the figure is a placeholder rather than this model's rate, so the caller
+  // can label it instead of printing it as though it had been measured.
+  return { tokens, cost: b.cost, real: false, estimated: true, basis: b.basis, priced: b.priced };
 }
 
 /**
@@ -631,10 +837,14 @@ function fmtCost(cost, real) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     RATES,
+    RATE_BASIS,
+    UNPRICED_BY_DESIGN,
+    isPeak,
     usageTokens,
     ratesFor,
     usageBuckets,
     usageCost,
+    costBreakdown,
     turnAccounting,
     estimateTokens,
     estimatedBuckets,
