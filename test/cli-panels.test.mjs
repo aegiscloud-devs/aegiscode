@@ -214,6 +214,59 @@ assert(helpText.includes('Support'), 'buildHelp shows the category label');
 const helpUnavail = flat(panels.buildHelp([{ name: 'doctor', desc: 'Run checks', category: 'support', unavailable: true }], ctx));
 assert(helpUnavail.includes('(unavailable)'), 'buildHelp flags unavailable commands');
 
+// ── the prompt row counts the CACHED prompt, not just the miss ─────────────
+//
+// Regression. These panels totalled `input + output`, but `input` is the MISS
+// half only (`usageBuckets` normalises it that way for every provider, and the
+// ledger rows and the desktop roll store that shape). On a real DeepSeek turn —
+// 1,250 miss of a 31,250 prompt — `input + output` dropped 30,000 cached
+// tokens, so /context read 1.6k for a session that had sent 31.6k. The turns
+// where the cache is working and the context is largest were exactly the turns
+// it under-reported, and this plugin's own engine is what fills that cache.
+const cached = { ...state, tokens: { input: 1250, output: 312, cacheRead: 30000, cacheWrite: 0 } };
+const ctxText = flat(panels.buildContext(cached, ctx));
+assert(ctxText.includes('31,250'), 'the prompt row counts the cached prompt (31,250), not the 1,250 miss');
+assert(ctxText.includes('30,000'), 'the cache slice is rendered, not folded away');
+assert(ctxText.includes('31,562'), 'the total is prompt + output, not the old input + output');
+// Leading space, because "1,562" is a substring of "31,562" — matching the bare
+// digits would pass on the very total this pins.
+assert(!ctxText.includes(' 1,562'), 'the old input+output total is gone');
+assert(ctxText.includes('cache read 30,000'), 'the prompt row says how much of it was a cache read');
+
+// The same turn in /tokens fills both cache bars. This is the half that was
+// ORPHANED: `state().tokens` carried no cache buckets at all, so the two bars
+// this builder draws could never fill, on any provider, in any session —
+// `recordTurn` read the raw wire spellings and accumulated neither.
+const tokText = flat(panels.buildTokens(cached, ctx));
+assert(tokText.includes('cache read'), 'buildTokens labels the cache-read bar');
+assert(tokText.includes('30,000'), 'the cache-read bar is filled from the bucket');
+assert(tokText.includes('31,562'), 'the /tokens total agrees with /context');
+
+// One formula, one place: /cost cannot disagree with /context about a turn.
+//
+// /cost never prints the total as digits — it renders it through the context
+// bar, so the number that carries the divergence is the PERCENTAGE. This turn
+// is 31,562 of a 200,000 window = 16%; the old `input + output` (1,562) rounds
+// to 1%, so this assertion reads 1% on the bug and 16% on the fix.
+const costText = flat(panels.buildCost(cached, ctx));
+assert(costText.includes('16%'), '/cost meters the same turn as /context (16%, not the 1% of input+output)');
+assert(!costText.includes(' 1% used'), '/cost does not report the miss-only percentage');
+// Its "Usage by model" row has the same shape of bug: it printed `input`, the
+// MISS half, as if it were the prompt.
+assert(costText.includes('31,250 input'), '/cost reports the cached prompt in its per-model row, not the 1,250 miss');
+assert(costText.includes('miss 1,250'), '/cost shows how much of that prompt was fresh input');
+
+// No cache in play: byte-identical to before, so nothing about a plain turn moved.
+const plain = { ...state, tokens: { input: 1250, output: 312 } };
+const plainText = flat(panels.buildContext(plain, ctx));
+assert(plainText.includes('1,250'), 'without a cache the prompt row is the input, as before');
+assert(plainText.includes('1,562'), 'without a cache the total is input + output, as before');
+assert(!plainText.includes('↳'), 'no cache split is printed when there is no cache');
+
+// A caller-supplied total (the live session tally) still wins outright.
+const tallied = { ...state, tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, total: 999 } };
+assert(flat(panels.buildTokens(tallied, ctx)).includes('999'), 'an explicit total is not recomputed');
+
 // ── the stubs are honest, two-line panels ──────────────────────────────────
 for (const name of ['buildDoctor', 'buildBuildPanel']) {
   const s = panels[name](state, ctx);

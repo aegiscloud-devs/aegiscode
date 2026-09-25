@@ -60,6 +60,30 @@ function str(v) {
   return v == null ? '' : String(v);
 }
 
+/**
+ * The four token buckets these panels render, in the shared shape.
+ *
+ * `input` is the MISS half only — that is what `usageBuckets` normalises it to
+ * for every provider, and what the ledger rows and the desktop roll store — so
+ * the prompt a context window actually holds is `input + cacheRead +
+ * cacheWrite`, NOT `input` alone. Totalling `input + output` (what this file
+ * did before) therefore silently dropped the entire cached prompt: the exact
+ * turns where the cache was working and the context was largest were the turns
+ * the meter under-reported.
+ *
+ * `tok.total` wins when a caller supplies one (the live session tally does), so
+ * this fallback can only ever add information, never overwrite it. One formula,
+ * one place: /cost, /context and /tokens must not disagree about the same turn.
+ */
+function tokenBuckets(tok) {
+  const input = num(tok.input);
+  const output = num(tok.output);
+  const cacheRead = num(tok.cacheRead);
+  const cacheWrite = num(tok.cacheWrite);
+  const prompt = input + cacheRead + cacheWrite;
+  return { input, output, cacheRead, cacheWrite, prompt, total: num(tok.total) || prompt + output };
+}
+
 /** Group digits: 1562 -> "1,562". Matches the CLI's format.js rule. */
 function fmtTokens(n) {
   const v = Number(n);
@@ -267,9 +291,7 @@ function buildCost(state, ctx = {}) {
   const { cols } = getSize();
   const W = Math.max(30, cols - 2);
   const tok = s.tokens && typeof s.tokens === 'object' ? s.tokens : {};
-  const input = num(tok.input);
-  const output = num(tok.output);
-  const total = num(tok.total) || input + output;
+  const { input, output, cacheRead, cacheWrite, prompt, total } = tokenBuckets(tok);
   const cost = num(s.costEur);
   const model = str(s.model) || 'the pinned model';
   const window = num(s.contextWindow) || 200000;
@@ -290,7 +312,14 @@ function buildCost(state, ctx = {}) {
     lines.push([span('', ' '), span(t.white, 'Turns:'), span(t.gray, ` ${num(s.turns)} turns · ${num(s.calls)} calls`)]);
   }
   lines.push([span('', ' '), span(t.white, '  Usage by model:')]);
-  lines.push([span('', ' '), span(t.gray, `   ${model}:  ${fmtTokens(input)} input, ${fmtTokens(output)} output (${fmtEur(cost)})`)]);
+  // The prompt, not the miss. `input` is the miss half only (see tokenBuckets),
+  // so printing it as "input" reported 1.2k for a turn that had sent 31.2k —
+  // the same under-report /context was fixed for, in the panel that sits right
+  // next to it. With a cache in play the row is a sum, so show the split too.
+  lines.push([span('', ' '), span(t.gray, `   ${model}:  ${fmtTokens(prompt)} input, ${fmtTokens(output)} output (${fmtEur(cost)})`)]);
+  if (cacheRead || cacheWrite) {
+    lines.push([span('', ' '), span(t.dim, `     ↳ miss ${fmtTokens(input)} · cache read ${fmtTokens(cacheRead)} · cache write ${fmtTokens(cacheWrite)}`)]);
+  }
   lines.push([span('', ' ')]);
   lines.push([span('', ' '), span(t.white + BOLD, 'Current session'), span(BOLD_OFF, '')]);
   lines.push(contextBar(total, window, t));
@@ -309,9 +338,7 @@ function buildContext(state, ctx = {}) {
   const { cols } = getSize();
   const W = Math.max(30, cols - 2);
   const tok = s.tokens && typeof s.tokens === 'object' ? s.tokens : {};
-  const input = num(tok.input);
-  const output = num(tok.output);
-  const total = num(tok.total) || input + output;
+  const { input, output, cacheRead, cacheWrite, prompt, total } = tokenBuckets(tok);
   const window = num(s.contextWindow) || 200000;
 
   const lines = [];
@@ -324,7 +351,17 @@ function buildContext(state, ctx = {}) {
     span('', ' '.repeat(Math.max(1, 10 - fmtTokens(tokens).length))),
     ...contextBar(tokens, window, t),
   ];
-  lines.push(row('Prompt tokens', input));
+  lines.push(row('Prompt tokens', prompt));
+  // With a cache in play the prompt row is a SUM, and a sum hides the one thing
+  // the operator is looking for: how much of the prompt was re-sent at full
+  // price. Show the split, so "280.0k" cannot be misread as 280k of fresh
+  // input. Absent a cache the row is byte-identical to before.
+  if (cacheRead || cacheWrite) {
+    lines.push([
+      span('', ' '),
+      span(t.dim, `  ↳ miss ${fmtTokens(input)} · cache read ${fmtTokens(cacheRead)} · cache write ${fmtTokens(cacheWrite)}`),
+    ]);
+  }
   lines.push(row('Output tokens', output));
   lines.push([span('', ' ')]);
   lines.push([span('', ' '), span(t.gray, '─'.repeat(Math.max(1, W - 2)))]);
@@ -896,11 +933,7 @@ function buildTokens(state, ctx = {}) {
   const { cols } = getSize();
   const W = Math.max(24, cols - 2);
   const tok = s.tokens && typeof s.tokens === 'object' ? s.tokens : {};
-  const input = num(tok.input);
-  const output = num(tok.output);
-  const cacheRead = num(tok.cacheRead);
-  const cacheWrite = num(tok.cacheWrite);
-  const total = num(tok.total) || input + output;
+  const { input, output, cacheRead, cacheWrite, total } = tokenBuckets(tok);
   const cost = num(s.costEur);
   const window = num(s.contextWindow) || 200000;
   const pct = window > 0 ? Math.min(100, Math.round((total / window) * 100)) : 0;

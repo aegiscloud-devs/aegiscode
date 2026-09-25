@@ -324,6 +324,12 @@ function resetKeyStream() {
 
 module.exports = {
   KEY,
+  // Exported for `test/cli-marking.test.mjs`: the click/drag/release split is
+  // the half of the marking gesture that is pure decoding, and it is the half
+  // that regressed silently once already (only left presses were named, so a
+  // sweep arrived as a single cell and nothing copied). A test that can't reach
+  // it can't pin it.
+  parseSgrMouse,
   attachKeyStream,
   suspendKeyStream,
   resumeKeyStream,
