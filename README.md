@@ -1,5 +1,10 @@
 # AEGIS Code
 
+<p align="center">
+  <img src="desktop/build/icon.png" width="128" height="128"
+       alt="The AEGIS Code app icon: a teal mark on a dark rounded tile">
+</p>
+
 **Pooled multi-provider inference, cross-machine memory, and account tools —
 as a Claude Code plugin, a standalone desktop app, and a shared transport
 library.** Everything runs off a single AEGIS API key.
@@ -17,6 +22,247 @@ one backend, and you can use any of them without the others.
 Get a free key at **https://aegiscloud.org**.
 
 ---
+
+## Start here
+
+Everything below this point is written for people who already know what an MCP
+server is. **This section isn't.** Read these five steps and you're done.
+
+### What is this thing?
+
+Think of a **TV remote**.
+
+The remote is small, cheap, and it lives in your hand. The **TVs** — the big
+expensive ones — live somewhere else, in a building you've never visited. You
+press a button, a TV lights up far away, and the picture comes back to you. You
+never had to buy a TV.
+
+AEGIS Code is the remote. The televisions are huge AI brains (Claude, GPT,
+DeepSeek, and others) running on AEGIS's computers. One small button-press from
+you, and one of them answers.
+
+You need exactly **one thing** to make it work: a **key**. It's a long password
+that starts with `aegis_`. It's your ticket. That's it.
+
+### What you can install
+
+You do **not** have to install all of these. Pick the ones you want.
+
+| The thing | What it feels like | What you type |
+|---|---|---|
+| **The Claude Code plugin** | New superpowers added to Claude Code | `/aegis-status` |
+| **`aegiscode`** (the terminal app) | A chat window made of text | `aegiscode` |
+| **AEGIS Desktop** | A normal app with windows and buttons | click an icon |
+
+### Step 0 — Get a key
+
+1. Go to **https://aegiscloud.org**
+2. Sign up. It's free.
+3. Copy your key. It looks like this:
+
+   ```
+   aegis_9f3c2a71b8e44d0c...
+   ```
+
+4. Paste it into a note somewhere safe for a minute. You'll need it in Step 3.
+
+> ⚠️ Your key is like your house key. Don't post it online, don't email it to
+> strangers, and don't paste it into a website that isn't `aegiscloud.org`.
+
+### Step 1 — Install Node.js (you need this for everything)
+
+Node.js is the engine that runs this software, the way a browser is the engine
+that runs websites.
+
+Open a terminal (the black window where you type commands) and type:
+
+```bash
+node -v
+```
+
+**If you see something like `v20.11.0`** — great, you already have it. Skip to
+Step 2.
+
+**If you see "command not found" or a number below 18** — go to
+**https://nodejs.org**, download the big green **LTS** button, install it, then
+close and reopen your terminal and run `node -v` again.
+
+### Step 2 — Install it. Pick ONE way.
+
+#### 🟢 Way 1 — npm (easiest; you don't need git)
+
+**npm** is the app store for Node.js. `i -g` means *"install this so I can use
+it from anywhere on my computer."*
+
+```bash
+# The terminal app
+npm i -g aegiscode
+
+# The window app (optional)
+npm i -g aegis-desktop
+```
+
+That's the whole install. Two lines. npm fetches the code, puts it in the right
+place, and adds the command to your PATH so you can just type `aegiscode`.
+
+#### 🔵 Way 2 — git (if you want the newest code, or want to change it)
+
+**git** downloads a whole project folder, including all its history. Use this
+if you're a developer, if npm is broken for you, or if you just like having the
+files.
+
+```bash
+git clone https://github.com/aegisinfo/aegiscode-plugin.git
+cd aegiscode-plugin
+```
+
+You now have the whole project in a folder. **You don't even have to install
+anything** — the terminal app runs straight out of the folder:
+
+```bash
+node cli/bin/aegiscode.js
+```
+
+When you want the newest version later:
+
+```bash
+cd aegiscode-plugin
+git pull
+```
+
+> **git vs npm in one sentence:** npm gives you a *finished product* in one
+> line; git gives you the *source code folder* so you can look inside, change
+> things, and update whenever you want.
+
+#### 🟣 Way 3 — the Claude Code plugin (extra powers *inside* Claude Code)
+
+You need the `claude` command already installed for this one.
+
+The absolute shortest path — one line, it does everything for you:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/install.sh | bash
+```
+
+It will ask for your key, save it, and register the plugin. Then **restart
+Claude Code**.
+
+If you'd rather do it by hand — two commands *inside* Claude Code:
+
+```
+/plugin marketplace add aegisinfo/aegiscode-plugin
+/plugin install aegiscode@aegiscode
+```
+
+…or point it at a folder you cloned with git in Way 2:
+
+```
+/plugin marketplace add ./aegiscode-plugin
+/plugin install aegiscode@aegiscode
+```
+
+### Step 3 — Tell the program your key (one line)
+
+The program doesn't know your key yet. Give it the key, in a way that survives
+restarts:
+
+```bash
+echo 'export AEGIS_API_KEY="aegis_PASTE_YOUR_KEY_HERE"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Then **close and reopen your terminal** so it sticks.
+
+*(Using zsh instead of bash? Swap `~/.bashrc` for `~/.zshrc`. Not sure? Run
+`echo $SHELL` — if it says zsh, use `.zshrc`.)*
+
+If you installed the terminal app, there's a friendlier way that does the same
+thing without you editing any files:
+
+```bash
+aegiscode login
+```
+
+It asks for the key, hides it as you type, and saves it to
+`~/.aegiscode/credentials.json`. **Every AEGIS app reads that one file** — the
+terminal app, the desktop app, and the Claude Code plugin — so you only ever do
+this once per computer.
+
+### Step 4 — Check that it worked
+
+**Terminal app:**
+
+```bash
+aegiscode "say hello in exactly five words"
+```
+
+You should get five words back from an AI.
+
+**Claude Code plugin:** restart Claude Code, then type:
+
+```
+/aegis-status
+```
+
+You should see memory stats and cloud sync status.
+
+### Step 5 — If it didn't work
+
+Find your symptom in the left column. The fix is on the right.
+
+| What you see | What it means | The fix |
+|---|---|---|
+| `command not found: aegiscode` | npm put it somewhere your terminal isn't looking | close and reopen the terminal, then try again |
+| `command not found: node` | Node.js isn't installed | do Step 1 |
+| `401`, `403`, or `invalid key` | The key is wrong, expired, or has a typo | run `aegiscode login` again and paste it carefully |
+| `No AEGIS_API_KEY` | The program can't find your key | redo Step 3, then reopen the terminal |
+| It worked before, not now | Your terminal is still using the old settings | close and reopen it |
+| `EACCES` when running `npm i -g` | npm wants permission it doesn't have | don't use `sudo` — use **Way 2 (git)** instead, it needs no permissions |
+| Claude Code doesn't know `/aegis-status` | The plugin was installed but Claude Code wasn't restarted | fully quit and reopen Claude Code |
+
+Still stuck? Open an issue at
+**https://github.com/aegisinfo/aegiscode-plugin/issues** and paste the exact
+error message.
+
+---
+
+## The details (for people who want them)
+
+## Non-compliance intolerance
+
+This project keeps a **compliance record** — not a changelog, not a feature
+list. `COMPLIANCE-FAILURES.md` records where an instruction was given and not
+carried out, and it is the artifact that survives a session.
+
+The policy is binding on the assistant (`skills/aegis-noncompliance/SKILL.md`):
+**a mistake the assistant notices is documented in the record in the same turn
+it is noticed.** A mistake noticed and not written down is a second mistake.
+
+Enforcement is a gate, not a habit:
+
+```bash
+# log an open failure (refuses entries with no evidence / no quote)
+node tools/noncompliance-append.mjs \
+  --report ~/aegis1/COMPLIANCE-FAILURES.md \
+  --title "Model selection missing for every user" \
+  --instruction "<the user's words, verbatim>" \
+  --what "what was not done" --evidence "file:line, failing test, commit" \
+  --severity model-selection --status open
+
+# close it only with the check that proves it
+node tools/noncompliance-append.mjs --report … --title "… (update)" \
+  --instruction "…" --what "same event, now remediated" --evidence "…" \
+  --status remediated --remedy "commit abc123" --verify "node --test … → pass"
+```
+
+The script exits `1` and writes nothing when an entry would hide the failure:
+no evidence, a description too short to be a record, banter like "should be
+fine", or a `remediated` status with no remedy and no verification. `--dry-run`
+prints the entry first. In Claude Code the same two flows are the
+`/aegis-noncompliance` and `/aegis-compliance-audit` commands.
+
+Policy tests: `node --test test/noncompliance-policy.test.mjs`.
+
 
 ## Claude Code plugin
 
@@ -58,6 +304,24 @@ echo 'export AEGIS_API_KEY="aegis_your_key_here"' >> ~/.bashrc   # or ~/.zshrc
 
 # 3. Restart Claude Code, then run /aegis-status
 ```
+
+### Install from a git checkout
+
+Want to read the code, edit it, or run a version newer than what the marketplace
+serves? Clone it and point Claude Code at the folder instead of at the remote:
+
+```bash
+git clone https://github.com/aegisinfo/aegiscode-plugin.git
+cd aegiscode-plugin
+```
+
+```
+/plugin marketplace add ./aegiscode-plugin
+/plugin install aegiscode@aegiscode
+```
+
+Edits in the checkout take effect on the next Claude Code restart, and
+`git pull` is the update path.
 
 The plugin resolves the credential the same way the other AEGIS hosts do —
 `$AEGIS_API_KEY` first, then `~/.aegiscode/credentials.json` — so a key saved by
@@ -254,9 +518,21 @@ aegiscode "explain this stack trace"   # one-shot
 echo "q" | aegiscode -p - # prompt on stdin
 ```
 
-From a source checkout, `node cli/bin/aegiscode.js` runs the same code with no
-install. The older `aegis-terminal` / `aegis-term` spelling is deprecated: it was
-the 0.1.x name of this same package, now folded into `aegiscode`.
+From a **git checkout** the same code runs with no install, no `npm i -g`, and
+no permissions needed — clone once, run it forever, `git pull` to update:
+
+```bash
+git clone https://github.com/aegisinfo/aegiscode-plugin.git
+cd aegiscode-plugin
+export AEGIS_API_KEY="aegis_your_key_here"
+node cli/bin/aegiscode.js                     # interactive session
+node cli/bin/aegiscode.js "explain this stack trace"   # one-shot
+```
+
+To make that checkout available as the plain `aegiscode` command, install it
+from the folder itself (`npm i -g .`, run inside `cli/`). The older
+`aegis-terminal` / `aegis-term` spelling is deprecated: it was the 0.1.x name of
+this same package, now folded into `aegiscode`.
 
 Plain text is a prompt; `/help` lists every command. Type it and go — the four
 you need first are `/class` (which route your turns take), `/models` (what you
@@ -301,6 +577,13 @@ than into a full-screen TUI, so its output stays pipeable.
 ## AEGIS Desktop (Electron)
 
 ![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](desktop/docs/demo.gif)
+
+| Pick a model class mid-conversation | A finished agent turn | A gated tool approval |
+|---|---|---|
+| [![The three-class model picker: cloud, local, and BYOK routes side by side](docs/marketing-assets/01-model-class-picker.png)](docs/marketing-assets/01-model-class-picker.png) | [![A completed agent answer with streamed reasoning and a tool transcript](docs/marketing-assets/02-answer-complete.png)](docs/marketing-assets/02-answer-complete.png) | [![A file edit held behind a diff approval card before it is applied](docs/marketing-assets/03-tool-approval-diff.png)](docs/marketing-assets/03-tool-approval-diff.png) |
+
+Still frames are captures of the real app
+(`desktop/scripts/capture-marketing-shots.mjs`); click one for full size.
 
 A standalone chat app over the same transport, with an **agentic tool loop**:
 the model can read, write, and edit files, list directories, glob, grep, run
@@ -482,7 +765,7 @@ hosts/install.js     merge-only installer (plan/apply/status/remove) + drift che
 hosts/spec.js        the canonical "run the MCP server" spec every host is built from
 hosts/openai-shim.js loopback OpenAI-compatible endpoint for non-MCP clients
 commands/            Claude Code slash commands
-skills/              Claude Code skills
+skills/              Claude Code skills (incl. aegis-noncompliance — the compliance policy)
 install.sh           one-line Claude Code installer
 .claude-plugin/      plugin + marketplace metadata
 desktop/             AEGIS Desktop (Electron host + lib + renderer)
@@ -514,5 +797,13 @@ node --test test/*.test.mjs     # the whole suite
 node --test test/local-engine.test.mjs   # one file
 ```
 
-Licensed under MIT — see [LICENSE](LICENSE). Security notes in
+Licensed under AGPL-3.0-or-later — see [LICENSE](LICENSE) and
+[LICENSING.md](LICENSING.md) (a commercial license that waives the AGPL terms is
+available). Security notes in
 [SECURITY.md](SECURITY.md).
+
+---
+
+Built by **Niklas Borneklint** — [aegiscloud.org](https://aegiscloud.org) · [@aegisinfo](https://github.com/aegisinfo)
+
+Part of the ÆGIS ecosystem.
