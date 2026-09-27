@@ -5,11 +5,10 @@ or later (`AGPL-3.0-or-later`).** The verbatim licence text is in
 [LICENSE](LICENSE). This document is the plain-language summary and the record
 of the licence change; where it and `LICENSE` disagree, `LICENSE` governs.
 
-Every manifest in this repo carries the same licence: `cli/package.json`
-(the published `aegiscode` CLI), `desktop/package.json` (`aegis-desktop`) and
-`online/package.json`. The first-party avatar packs under
-`desktop/lib/avatar/packs/` carry it too. Vendored third-party code keeps its
-own licence — see [desktop/renderer/vendor/NOTICE.md](desktop/renderer/vendor/NOTICE.md).
+Every Aegiscode manifest carries the same licence: the published `aegiscode`
+CLI, the `aegis-desktop` app and the `online` web surface. The first-party
+avatar packs carry it too. Vendored third-party code keeps its own licence —
+see [desktop/renderer/vendor/NOTICE.md](desktop/renderer/vendor/NOTICE.md).
 
 ## Notice to apply to the program
 
@@ -63,8 +62,7 @@ the code public and free while making reuse carry a legal consequence.
 
 This also keeps the SignPath Foundation signing grant eligible — that grant
 requires an OSI-approved open-source licence against a public repo, which AGPL
-is and a proprietary licence would not be. See
-[desktop/SIGNING.md](desktop/SIGNING.md).
+is and a proprietary licence would not be.
 
 ## What this change does not reach
 
@@ -77,9 +75,8 @@ is and a proprietary licence would not be. See
   `git subtree split` mirror of `desktop/`, and it still ships the MIT
   `LICENSE`. It has **not** been converted. Until it is, that mirror is MIT and
   the "Source (MIT)" line in the promo copy is true *of the mirror* and false
-  *of this repo* — which is exactly why the promo copy and
-  [docs/launch-readiness.md](docs/launch-readiness.md) are annotated rather than
-  left as-is.
+  *of this repo* — which is exactly why the promo copy and the launch-readiness
+  record are annotated rather than left as-is.
 - **Third-party code keeps its own licence** — notably `marked`
   (MIT / MPL-2.0 dual) under `desktop/renderer/vendor/`.
 
@@ -107,7 +104,7 @@ Dual licensing only works if the maintainer holds enough rights to license every
 contribution under both the AGPL and the commercial terms, so contributions are
 accepted under a contributor agreement (CLA), not by inbound-equals-outbound
 default. This replaces the earlier "no CLA, no contributor agreement to sign"
-position in [docs/reddit-drafts.md](docs/reddit-drafts.md). Until a contribution
+position recorded in the campaign drafts. Until a contribution
 carries that grant, treat it as needing explicit written permission before it is
 merged; a pull request alone is not that permission.
 
