@@ -114,16 +114,16 @@ stub and refuse to publish an asset that fails their assertions.
 
 **The model-class picker** — all three routes, switchable mid-conversation:
 
-![The model-class picker listing Aegis Cloud, Bring your own key, and Local](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/01-model-class-picker.png)
+_screenshot: `docs/marketing-assets/01-model-class-picker.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
 
 **A completed answer** in the transcript:
 
-![A completed answer in the transcript](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/02-answer-complete.png)
+_screenshot: `docs/marketing-assets/02-answer-complete.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
 
 **The tool-call approval card** with a proposed edit — what blocks `exec`,
 `writeFile` and `editFile` until you allow, allow for the session, or deny:
 
-![The tool-call approval card with a proposed edit](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/docs/marketing-assets/03-tool-approval-diff.png)
+_screenshot: `docs/marketing-assets/03-tool-approval-diff.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
 
 ## Tools available to the model
 

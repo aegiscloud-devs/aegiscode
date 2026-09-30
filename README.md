@@ -578,12 +578,10 @@ than into a full-screen TUI, so its output stays pipeable.
 
 ![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](desktop/docs/demo.gif)
 
-| Pick a model class mid-conversation | A finished agent turn | A gated tool approval |
-|---|---|---|
-| [![The three-class model picker: cloud, local, and BYOK routes side by side](docs/marketing-assets/01-model-class-picker.png)](docs/marketing-assets/01-model-class-picker.png) | [![A completed agent answer with streamed reasoning and a tool transcript](docs/marketing-assets/02-answer-complete.png)](docs/marketing-assets/02-answer-complete.png) | [![A file edit held behind a diff approval card before it is applied](docs/marketing-assets/03-tool-approval-diff.png)](docs/marketing-assets/03-tool-approval-diff.png) |
-
-Still frames are captures of the real app
-(`desktop/scripts/capture-marketing-shots.mjs`); click one for full size.
+Still frames of the model-class picker, a finished agent turn and a gated tool
+approval were captured from the real app by `desktop/scripts/capture-marketing-shots.mjs`.
+They are campaign material and are kept out of every public repository
+(`aegisinfo/aegis-docs`, private); what remains here is the recording above.
 
 A standalone chat app over the same transport, with an **agentic tool loop**:
 the model can read, write, and edit files, list directories, glob, grep, run
