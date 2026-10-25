@@ -30,8 +30,11 @@ jobs:
           set -euo pipefail
           since=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
 
+          # The window is applied in Python below, not in the query: GraphQL
+          # rejects a declared-but-unused variable ($since), and filtering
+          # locally keeps the window explicit where the counts are computed.
           data=$(gh api graphql -f query='
-            query($since: DateTime!) {
+            query {
               repository(owner:"aegiscloud-devs", name:"aegiscode") {
                 discussions(first:100, orderBy:{field:UPDATED_AT, direction:DESC}) {
                   nodes {
@@ -41,7 +44,7 @@ jobs:
                   }
                 }
               }
-            }' -f since="$since")
+            }')
 
           echo "$data" > /tmp/gql.json
 
