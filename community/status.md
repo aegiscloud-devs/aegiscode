@@ -6,3 +6,20 @@ Counts only. No targets here — a target is not a result.
 Nothing recorded yet: the digest has not run. It runs Mondays 07:00 UTC and
 appends one section per run; the first entry will appear after the first
 scheduled run (or after a manual dispatch).
+
+## 2026-10-25
+
+- New threads: **6**
+- Threads receiving a reply: **0**
+- New threads with no reply after 7 days: **6**
+- Total threads on record: 6
+
+Unanswered new threads (the number to act on):
+
+- #6 Show and tell: what to post, and what to redact — Show and tell
+- #5 Ideas: how to ask for a feature so it can actually be built — Ideas
+- #4 Read first: install troubleshooting and what to include in a report — Q&A
+- #3 Which model class should I use — aegis, byok, or local? — Q&A
+- #2 Claude Code plugin: there is no public installer yet — Announcements
+- #1 Welcome — what this community is for — Announcements
+
