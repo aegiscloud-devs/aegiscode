@@ -1,0 +1,34 @@
+---
+name: Relay discussions to Discord
+
+# One-way mirror: a thread opened in Discussions appears in Discord, so the
+# people who live in Discord can see it without asking others to check GitHub.
+# Replies relay too, because a thread with no replies visible in the mirror
+# looks dead. Nothing in Discord writes back — that is the trade, and it is
+# deliberate: no second source of truth, no bot to run, nothing to moderate at
+# 3am beyond the channel itself.
+
+on:
+  discussion:
+    types: [created]
+  discussion_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Relay
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          DISCORD_WEBHOOK_ANNOUNCEMENTS: ${{ secrets.DISCORD_WEBHOOK_ANNOUNCEMENTS }}
+          DISCORD_WEBHOOK_COMMUNITY: ${{ secrets.DISCORD_WEBHOOK_COMMUNITY }}
+        run: node scripts/discord-relay.mjs

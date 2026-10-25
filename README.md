@@ -780,8 +780,11 @@ Security issues do **not** go in Discussions — see [SECURITY.md](SECURITY.md).
 Read [COMMUNITY.md](COMMUNITY.md) before posting: it is short, and it explains
 what is in scope for this repo (documentation) versus the products.
 
-There is no Discord, no chat server, and no support SLA. Discussions is the one
-place, and it is read by a person, not a bot.
+There is **no Discord server yet**, and no support SLA. Discussions is the one
+place to be heard, and it is read by a person, not a bot. The Discord blueprint
+and its kill criteria are committed in [community/DISCORD.md](community/DISCORD.md);
+the relay workflows are already in the repo and stay silent until a server is
+connected, so nothing is announced before it exists.
 
 ---
 
