@@ -115,16 +115,16 @@ stub and refuse to publish an asset that fails their assertions.
 
 **The model-class picker** — all three routes, switchable mid-conversation:
 
-_screenshot: `docs/marketing-assets/01-model-class-picker.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
+_screenshot: `docs/marketing-assets/01-model-class-picker.png` — held in the private docs repository, a private docs repository (campaign material is not published)._
 
 **A completed answer** in the transcript:
 
-_screenshot: `docs/marketing-assets/02-answer-complete.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
+_screenshot: `docs/marketing-assets/02-answer-complete.png` — held in the private docs repository, a private docs repository (campaign material is not published)._
 
 **The tool-call approval card** with a proposed edit — what blocks `exec`,
 `writeFile` and `editFile` until you allow, allow for the session, or deny:
 
-_screenshot: `docs/marketing-assets/03-tool-approval-diff.png` — held in the private docs repository, `aegisinfo/aegis-docs` (campaign material is not published)._
+_screenshot: `docs/marketing-assets/03-tool-approval-diff.png` — held in the private docs repository, a private docs repository (campaign material is not published)._
 
 ## Tools available to the model
 
@@ -279,14 +279,8 @@ The app registers an `aegis://` protocol handler:
 
 ## Run from source
 
-```bash
-git clone https://www.npmjs.com/package/aegis-desktop.git
-cd aegiscode-desktop
-npm install
-npm start
-```
-
-Or, from the monorepo checkout, run this directory directly:
+There is no public source checkout to clone — the source is held privately.
+If you have a checkout of the private monorepo, run this directory directly:
 
 ```bash
 cd aegiscode-plugin/desktop
@@ -329,11 +323,9 @@ transport over the same AEGIS backend — see the repo root for that fuller
 architecture picture, and [cli/README.md](../cli/README.md) for the terminal
 host over the same engine.
 
-**Two repos, one product.** This directory is the source of truth. The
-standalone repo at
-[aegiscloud/aegiscode-desktop](https://www.npmjs.com/package/aegis-desktop)
-is a `git subtree split` of it — same code, published separately so it can be
-cloned and built on its own. Edits land here and are synced out; nothing is
-authored there. The npm package
+**One source of truth.** This directory is it. A standalone
+`git subtree split` repository was planned so the desktop app could be cloned
+and built on its own; no such public repository exists today. Edits land here.
+The npm package
 [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop) is built from
 that standalone repo.

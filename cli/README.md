@@ -58,13 +58,14 @@ product, so they are one name now:
 |---|---|
 | `aegiscode` | **this host** (npm `latest`, currently 7.x). Installs a single binary, `aegiscode`. |
 | `aegis-terminal` | deprecated — the 0.1.x spelling of this package, folded into `aegiscode`. |
-| `aegiscode-cli` | 4.0.3, an earlier name of the full `aegisinfo/aegiscode` coding-assistant CLI. Untouched. |
+| `aegiscode-cli` | 4.0.3, an earlier name of the full coding-assistant CLI (originally published under the now-retired `aegisinfo` account). Untouched. |
 | `aegis-cli` | 0.4.8 (unrelated). |
 | `aegis` (bin) | claimed **twice already** — by `aegiscode-cli` (→ `bin/cli.js`) and by `aegis-desktop` (→ `bin/aegis.js`). Pre-existing; whichever installs last wins. |
 
 Publishing this host as `aegiscode` moves the `latest` dist-tag for that name
-onto it. The previous line (`aegiscode@5.x`, the `aegisinfo/aegiscode` agent) is
-still installable and immutable on the registry — pin `aegiscode@5` for it.
+onto it. The previous line (`aegiscode@5.x`, the older coding-assistant agent,
+whose package metadata still names the retired `aegisinfo` account) is still
+installable and immutable on the registry — pin `aegiscode@5` for it.
 
 ## Installation
 

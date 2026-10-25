@@ -558,7 +558,7 @@ than into a full-screen TUI, so its output stays pipeable.
 Still frames of the model-class picker, a finished agent turn and a gated tool
 approval were captured from the real app by `desktop/scripts/capture-marketing-shots.mjs`.
 They are campaign material and are kept out of every public repository
-(`aegisinfo/aegis-docs`, private); what remains here is the recording above.
+(a private docs repository); what remains here is the recording above.
 
 A standalone chat app over the same transport, with an **agentic tool loop**:
 the model can read, write, and edit files, list directories, glob, grep, run
@@ -566,11 +566,9 @@ shell commands in a persistent session, and delegate whole sub-tasks to
 subagents. It does **not** require Claude Code.
 
 Published to npm as [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-(`npm i -g aegis-desktop && aegis`), with its own dedicated source repo at
-[aegiscloud/aegiscode-desktop](https://www.npmjs.com/package/aegis-desktop)
-(a `git subtree split` of this `desktop/` directory) — this section stays the
-canonical build/architecture reference; the other repo carries the install
-guide and screenshot.
+(`npm i -g aegis-desktop && aegis`). Its source is held privately. This
+section is the canonical install/architecture reference — there is no public
+source repository to clone and build.
 
 | Tool | What it does |
 |---|---|
@@ -803,6 +801,6 @@ available). Security notes in
 
 ---
 
-Built by **Niklas Borneklint** — [aegiscloud.org](https://aegiscloud.org) · [@aegisinfo](https://github.com/aegisinfo)
+Built by **Niklas Borneklint** — [aegiscloud.org](https://aegiscloud.org) · [@aegiscloud-devs](https://github.com/aegiscloud-devs)
 
 Part of the ÆGIS ecosystem.

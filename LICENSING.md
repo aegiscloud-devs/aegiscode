@@ -71,12 +71,11 @@ is and a proprietary licence would not be.
   change, installers attached to releases before this change, and forks made
   from pre-change commits. Only releases published from this commit onward are
   AGPL.
-- **`aegiscloud/aegiscode-desktop` is a separate repo.** It is the
-  `git subtree split` mirror of `desktop/`, and it still ships the MIT
-  `LICENSE`. It has **not** been converted. Until it is, that mirror is MIT and
-  the "Source (MIT)" line in the promo copy is true *of the mirror* and false
-  *of this repo* — which is exactly why the promo copy and the launch-readiness
-  record are annotated rather than left as-is.
+- **The `desktop/` subtree mirror is not published.** A `git subtree split`
+  mirror of `desktop/` was planned as a standalone repository and still ships
+  the MIT `LICENSE`; no such public repository exists today. Until one is
+  published and relicensed, the "Source (MIT)" line in older promo copy is
+  annotated rather than left as-is.
 - **Third-party code keeps its own licence** — notably `marked`
   (MIT / MPL-2.0 dual) under `desktop/renderer/vendor/`.
 
