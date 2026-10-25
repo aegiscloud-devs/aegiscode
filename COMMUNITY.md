@@ -28,6 +28,18 @@ private handling.
   thread goes quiet for more than a week, reply to it — a bump is fine and is
   not rude.
 - **No bot triage.** Nothing here is auto-closed, auto-labeled, or auto-answered.
+
+## Discord
+
+There is no open AEGIS Discord server. If one is opened, it will be a **mirror
+of this Discussions board plus a chat room** — not a second place to file bugs,
+and not a faster support line. The layout, the exact steps to connect it, the
+moderation model ("one person, no 24/7"), and the kill criteria decided in
+advance are in [community/DISCORD.md](community/DISCORD.md).
+
+The relay automation is already committed: a release or a new Discussion can be
+mirrored into a Discord channel through a webhook, with no bot to run. It does
+nothing until webhook secrets exist, and it exits cleanly rather than failing.
 - **Ideas are not promises.** A popular idea is a signal, not a commitment.
   Things get built when they fit the product, not when they get upvotes.
 

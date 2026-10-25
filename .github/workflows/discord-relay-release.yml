@@ -1,0 +1,28 @@
+---
+name: Relay releases to Discord
+
+# Releases are the one thing a chat server is genuinely better at than a
+# mailing list: short, dated, and useful in the moment. Everything else stays
+# in Discussions.
+
+on:
+  release:
+    types: [published, prereleased]
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Relay
+        env:
+          EVENT_NAME: release
+          EVENT_PATH: ${{ github.event_path }}
+          DISCORD_WEBHOOK_ANNOUNCEMENTS: ${{ secrets.DISCORD_WEBHOOK_ANNOUNCEMENTS }}
+        run: node scripts/discord-relay.mjs
