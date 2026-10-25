@@ -1,25 +1,30 @@
 # AEGIS Code
 
 <p align="center">
-  <img src="desktop/build/icon.png" width="128" height="128"
-       alt="The AEGIS Code app icon: a teal mark on a dark rounded tile">
 </p>
 
 **Pooled multi-provider inference, cross-machine memory, and account tools —
-as a Claude Code plugin, a standalone desktop app, and a shared transport
-library.** Everything runs off a single AEGIS API key.
+as a Claude Code plugin, a standalone desktop app, a terminal host, and a shared
+transport library.** Everything runs off a single AEGIS API key.
 
-This is **not just a Claude Code plugin.** The repo ships three surfaces over
-one backend, and you can use any of them without the others.
+Three surfaces over one backend, and you can use any of them without the
+others.
 
 | I want to… | Use | Install |
 |---|---|---|
-| Get AEGIS tools inside Claude Code | [Claude Code plugin](#claude-code-plugin) | one-line installer |
+| Get AEGIS tools inside Claude Code | [Claude Code plugin](#claude-code-plugin) | local checkout (no public installer yet) |
 | Get AEGIS tools inside VS Code, Cursor, Zed… | [Editor hosts](#editor-hosts-vs-code-cursor-zed-) | `aegiscode mcp install` |
 | Use a standalone desktop AI app | [AEGIS Desktop](#aegis-desktop-electron) | `npm i -g aegis-desktop` |
+| Work in the terminal | [aegiscode CLI](#aegiscode-cli) | `npm i -g aegiscode` |
 | Embed the transport in my own software | [Shared thin client](#shared-thin-client) | copy `client/aegis.js` |
 
 Get a free key at **https://aegiscloud.org**.
+
+> **What this repository is.** Documentation and licensing for AEGIS Code —
+> the READMEs, the license, and the community surface. The source for these
+> products lives in private repositories; there is no public source tree or
+> installer here. Questions, answers, and bug reports belong in
+> [Discussions](https://github.com/aegiscloud-devs/aegiscode/discussions).
 
 ---
 
@@ -105,56 +110,32 @@ npm i -g aegis-desktop
 That's the whole install. Two lines. npm fetches the code, puts it in the right
 place, and adds the command to your PATH so you can just type `aegiscode`.
 
-#### 🔵 Way 2 — git (if you want the newest code, or want to change it)
+#### 🔵 Way 2 — pinning a version (if you need an exact one)
 
-**git** downloads a whole project folder, including all its history. Use this
-if you're a developer, if npm is broken for you, or if you just like having the
-files.
-
-```bash
-git clone https://github.com/aegisinfo/aegiscode-plugin.git
-cd aegiscode-plugin
-```
-
-You now have the whole project in a folder. **You don't even have to install
-anything** — the terminal app runs straight out of the folder:
+`npm` installs the newest release. To hold a specific version — for a script, a
+lab machine, or because a new release broke something — install it explicitly:
 
 ```bash
-node cli/bin/aegiscode.js
+npm install -g aegiscode@7.0.16
+npm view aegiscode versions --json    # every published version
 ```
 
-When you want the newest version later:
-
-```bash
-cd aegiscode-plugin
-git pull
-```
-
-> **git vs npm in one sentence:** npm gives you a *finished product* in one
-> line; git gives you the *source code folder* so you can look inside, change
-> things, and update whenever you want.
+> **npm vs git in one sentence:** npm gives you a *finished product* in one
+> line; there is no public git checkout of the app — its source repository is
+> private.
 
 #### 🟣 Way 3 — the Claude Code plugin (extra powers *inside* Claude Code)
 
-You need the `claude` command already installed for this one.
+You need the `claude` command already installed for this one, **and a checkout
+of the private plugin repository** — there is no public installer.
 
-The absolute shortest path — one line, it does everything for you:
+> **Not installable from this repo today.** This repository is documentation
+> and licensing only — the plugin source, its `install.sh`, and its marketplace
+> live in a private repository. The commands below work once you have that
+> checkout locally; there is no public one-liner yet. Track it in
+> [Discussions → Announcements](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/announcements).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/install.sh | bash
-```
-
-It will ask for your key, save it, and register the plugin. Then **restart
-Claude Code**.
-
-If you'd rather do it by hand — two commands *inside* Claude Code:
-
-```
-/plugin marketplace add aegisinfo/aegiscode-plugin
-/plugin install aegiscode@aegiscode
-```
-
-…or point it at a folder you cloned with git in Way 2:
+From a local checkout of the plugin:
 
 ```
 /plugin marketplace add ./aegiscode-plugin
@@ -221,7 +202,7 @@ Find your symptom in the left column. The fix is on the right.
 | Claude Code doesn't know `/aegis-status` | The plugin was installed but Claude Code wasn't restarted | fully quit and reopen Claude Code |
 
 Still stuck? Open an issue at
-**https://github.com/aegisinfo/aegiscode-plugin/issues** and paste the exact
+**https://github.com/aegiscloud-devs/aegiscode/issues** and paste the exact
 error message.
 
 ---
@@ -231,8 +212,9 @@ error message.
 ## Non-compliance intolerance
 
 This project keeps a **compliance record** — not a changelog, not a feature
-list. `COMPLIANCE-FAILURES.md` records where an instruction was given and not
-carried out, and it is the artifact that survives a session.
+list. `COMPLIANCE-FAILURES.md` (private repository) records where an
+instruction was given and not carried out, and it is the artifact that survives
+a session. The tooling below ships with the plugin, not with this docs repo.
 
 The policy is binding on the assistant (`skills/aegis-noncompliance/SKILL.md`):
 **a mistake the assistant notices is documented in the record in the same turn
@@ -266,16 +248,15 @@ Policy tests: `node --test test/noncompliance-policy.test.mjs`.
 
 ## Claude Code plugin
 
-**Requirements:** Node.js 18+ and the `claude` CLI.
+**Requirements:** Node.js 18+ and the `claude` CLI, plus a local plugin checkout.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/install.sh | bash
-```
+> **There is no public install command yet.** The Claude Code plugin's source,
+> `install.sh` and marketplace file are held in a private repository; this repo
+> publishes the documentation only. The manual steps below are the real path.
 
-The installer prompts for your AEGIS key, saves it to `~/.bashrc` and
-`~/.zshrc`, registers the marketplace (`aegisinfo/aegiscode-plugin`), and
-installs the plugin (`aegiscode@aegiscode`). Then **restart Claude Code** and
-run:
+The plugin resolves your key from `$AEGIS_API_KEY` or
+`~/.aegiscode/credentials.json`, the same as the CLI and the desktop app.
+After installing from a checkout, **restart Claude Code** and run:
 
 ```
 /aegis-status
@@ -283,11 +264,13 @@ run:
 
 ### Non-interactive install
 
-Export your real key first, then pipe — the installer will not prompt:
+Not available publicly yet — `install.sh` ships in the private plugin
+repository. Once you have a checkout, export the key first so the installer
+never prompts:
 
 ```bash
 export AEGIS_API_KEY="aegis_..."
-curl -fsSL https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/install.sh | bash
+./aegiscode-plugin/install.sh
 ```
 
 ### Manual install
@@ -298,22 +281,17 @@ aegiscode login                       # prompts, no echo, saves to ~/.aegiscode/
 # …or, if you don't have the CLI installed:
 echo 'export AEGIS_API_KEY="aegis_your_key_here"' >> ~/.bashrc   # or ~/.zshrc
 
-# 2. Inside Claude Code
-/plugin marketplace add aegisinfo/aegiscode-plugin
+# 2. Inside Claude Code, pointed at your local plugin checkout
+/plugin marketplace add ./aegiscode-plugin
 /plugin install aegiscode@aegiscode
 
 # 3. Restart Claude Code, then run /aegis-status
 ```
 
-### Install from a git checkout
+### Install from a local checkout
 
-Want to read the code, edit it, or run a version newer than what the marketplace
-serves? Clone it and point Claude Code at the folder instead of at the remote:
-
-```bash
-git clone https://github.com/aegisinfo/aegiscode-plugin.git
-cd aegiscode-plugin
-```
+The plugin is not published to a public marketplace. If you have a checkout of
+the private plugin repository, point Claude Code at the folder:
 
 ```
 /plugin marketplace add ./aegiscode-plugin
@@ -321,7 +299,9 @@ cd aegiscode-plugin
 ```
 
 Edits in the checkout take effect on the next Claude Code restart, and
-`git pull` is the update path.
+`git pull` is the update path. Without that checkout there is nothing to
+install — track availability in
+[Announcements](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/announcements).
 
 The plugin resolves the credential the same way the other AEGIS hosts do —
 `$AEGIS_API_KEY` first, then `~/.aegiscode/credentials.json` — so a key saved by
@@ -518,21 +498,18 @@ aegiscode "explain this stack trace"   # one-shot
 echo "q" | aegiscode -p - # prompt on stdin
 ```
 
-From a **git checkout** the same code runs with no install, no `npm i -g`, and
-no permissions needed — clone once, run it forever, `git pull` to update:
+There is no public source checkout — `aegiscode` is distributed as the npm
+package only. If you hit `EACCES` on a global install, use a user-local prefix
+instead of `sudo`:
 
 ```bash
-git clone https://github.com/aegisinfo/aegiscode-plugin.git
-cd aegiscode-plugin
-export AEGIS_API_KEY="aegis_your_key_here"
-node cli/bin/aegiscode.js                     # interactive session
-node cli/bin/aegiscode.js "explain this stack trace"   # one-shot
+npm config set prefix ~/.npm-global     # one time
+export PATH="$HOME/.npm-global/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
+npm i -g aegiscode
 ```
 
-To make that checkout available as the plain `aegiscode` command, install it
-from the folder itself (`npm i -g .`, run inside `cli/`). The older
-`aegis-terminal` / `aegis-term` spelling is deprecated: it was the 0.1.x name of
-this same package, now folded into `aegiscode`.
+The older `aegis-terminal` / `aegis-term` spelling is deprecated: it was the
+0.1.x name of this same package, now folded into `aegiscode`.
 
 Plain text is a prompt; `/help` lists every command. Type it and go — the four
 you need first are `/class` (which route your turns take), `/models` (what you
@@ -590,7 +567,7 @@ subagents. It does **not** require Claude Code.
 
 Published to npm as [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
 (`npm i -g aegis-desktop && aegis`), with its own dedicated source repo at
-[aegiscloud/aegiscode-desktop](https://github.com/aegiscloud/aegiscode-desktop)
+[aegiscloud/aegiscode-desktop](https://www.npmjs.com/package/aegis-desktop)
 (a `git subtree split` of this `desktop/` directory) — this section stays the
 canonical build/architecture reference; the other repo carries the install
 guide and screenshot.
@@ -741,9 +718,12 @@ const aegis = require('./client/aegis.js');   // Node
 
 ## Architecture
 
-This repo ships **transport + UI only**. There is no engine, orchestration, or
-routing/tier/brain logic here — that lives server-side on `aegiscloud.org` (and
-in the private `ae-guix` product).
+None of these products contain an engine, orchestration, or routing/tier/brain
+logic — that lives server-side on `aegiscloud.org`. The table below describes
+the **shipped packages**, not this repository, which holds only documentation:
+
+> The source for every surface below is private. This repo carries the READMEs
+> and the license; it has no `package.json` and no test suite.
 
 | Surface | Where it lives | What it is |
 |---|---|---|
@@ -784,16 +764,37 @@ HTTPS.
 
 ---
 
+## Community
+
+Questions, answers, feature ideas, and setups people want to show off live in
+[GitHub Discussions](https://github.com/aegiscloud-devs/aegiscode/discussions):
+
+| Category | Use it for |
+|---|---|
+| [Announcements](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/announcements) | Releases, breaking changes, incident notes. |
+| [Q&A](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/q-a) | "It says 401", "which class should I use", install problems. **Mark the answer that fixed it** — the next person with the same problem finds it that way. |
+| [Ideas](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/ideas) | Feature requests. Upvote instead of re-posting the same request. |
+| [Show and tell](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/show-and-tell) | What you built, your config, your workflows. |
+| [General](https://github.com/aegiscloud-devs/aegiscode/discussions/categories/general) | Everything else. |
+
+Security issues do **not** go in Discussions — see [SECURITY.md](SECURITY.md).
+Read [COMMUNITY.md](COMMUNITY.md) before posting: it is short, and it explains
+what is in scope for this repo (documentation) versus the products.
+
+There is no Discord, no chat server, and no support SLA. Discussions is the one
+place, and it is read by a person, not a bot.
+
+---
+
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Run the tests with plain Node — no
-Electron required, and no dependencies to install at the repo root (there is no
-root `package.json`):
+See [CONTRIBUTING.md](CONTRIBUTING.md) — in this repository that means
+documentation changes. There is no source tree, build step, or test suite here
+(the shipped packages are developed in private repositories).
 
-```bash
-node --test test/*.test.mjs     # the whole suite
-node --test test/local-engine.test.mjs   # one file
-```
+Community questions, answers and feature ideas live in
+[Discussions](https://github.com/aegiscloud-devs/aegiscode/discussions); see
+[COMMUNITY.md](COMMUNITY.md) for scope and response expectations.
 
 Licensed under AGPL-3.0-or-later — see [LICENSE](LICENSE) and
 [LICENSING.md](LICENSING.md) (a commercial license that waives the AGPL terms is

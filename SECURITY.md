@@ -6,7 +6,7 @@ If you discover a security issue in this repository, please **do not** open a
 public issue. Report it privately so it can be addressed before disclosure:
 
 - GitHub: **Security → Report a vulnerability** (private security advisory) on
-  [aegisinfo/aegiscode-plugin](https://github.com/aegisinfo/aegiscode-plugin/security/advisories/new)
+  [aegiscloud-devs/aegiscode](https://github.com/aegiscloud-devs/aegiscode/security/advisories/new)
 - Email: security@aegiscloud.org
 
 Please include:
@@ -21,19 +21,29 @@ anonymous.
 
 ## Scope
 
-This repository is a **thin client wrapper** only. In scope:
+This repository is **documentation and licensing only** — it ships no code, and
+no exploit can originate from it. Report nevertheless if the problem concerns
+one of the shipped products the documentation describes:
 
-- `install.sh` — the one-line installer
-- `mcp/server.js` — the zero-dependency stdio MCP server
-- `commands/*` and `skills/*` — Claude Code slash commands and skills
+| Component | What it is |
+|---|---|
+| `aegiscode` (npm) | The terminal host |
+| `aegis-desktop` (npm) | The Electron desktop app |
+| Claude Code plugin | Slash commands + MCP server |
+| MCP server / editor-host installer | Zero-dependency stdio server, config writer |
 
-Out of scope (handled by separate private/service teams):
+Out of scope here (still welcome, routed internally):
 
 - `aegiscloud.org` and its server-side services
-- The private AEGIS engine and orchestration ("the brain")
+- The AEGIS engine, routing and orchestration
+- Account, billing, and key-management endpoints
+
+If a report concerns code in a private repository, say so in the advisory —
+it is forwarded to the right owner rather than closed.
 
 ## What this repository does **not** contain
 
+- **No source code.** Documentation and licensing only.
 - **No secrets, keys, or credentials** are stored in this repository.
 - Your `AEGIS_API_KEY` (`aegis_...`) lives only in your own shell environment,
   written by `install.sh` to your shell rc file. It is never committed and

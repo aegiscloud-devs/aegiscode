@@ -56,7 +56,7 @@ product, so they are one name now:
 
 | Name | Status |
 |---|---|
-| `aegiscode` | **this host**, v6.0.0. Installs a single binary, `aegiscode`. |
+| `aegiscode` | **this host** (npm `latest`, currently 7.x). Installs a single binary, `aegiscode`. |
 | `aegis-terminal` | deprecated — the 0.1.x spelling of this package, folded into `aegiscode`. |
 | `aegiscode-cli` | 4.0.3, an earlier name of the full `aegisinfo/aegiscode` coding-assistant CLI. Untouched. |
 | `aegis-cli` | 0.4.8 (unrelated). |
@@ -69,9 +69,7 @@ still installable and immutable on the registry — pin `aegiscode@5` for it.
 ## Installation
 
 ```bash
-npm install -g aegiscode
-# or, from a source checkout — no install needed:
-node cli/bin/aegiscode.js
+npm install -g aegiscode     # the only install path; source is private
 ```
 
 Requires Node 18+. Save your key once — it goes to `~/.aegiscode/credentials.json`
@@ -585,12 +583,8 @@ Anything that is not a real terminal — a pipe, `-p`, a CI run — stays a line
 transcript written once to scrollback, so output remains pipeable and
 scriptable.
 
-Render it yourself, with no key and no network:
-
-```bash
-node cli/scripts/demo.mjs            # from a source checkout
-                                     # --light, --width 100, --plain also work
-```
+`aegiscode --plain` renders the same transcript style — no key, no network
+needed for the flag parsing, and `--width 100` widens the layout.
 
 ## Design notes
 
