@@ -1,6 +1,6 @@
 # AEGIS Desktop
 
-![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](https://raw.githubusercontent.com/aegisinfo/aegiscode-plugin/main/desktop/docs/demo.gif)
+![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](https://raw.githubusercontent.com/aegiscloud-devs/aegiscode/main/desktop/docs/demo.gif)
 
 A standalone Electron chat app over the [AEGIS](https://aegiscloud.org) API,
 with an **agentic tool loop**: the model can read, write, and edit files,
@@ -9,14 +9,15 @@ delegate whole sub-tasks to subagents. It does **not** require Claude Code.
 
 ## Install
 
-Download a build from the
-[releases page](https://github.com/aegisinfo/aegiscode-plugin/releases) — the
-repo the release workflow publishes binaries to — or install from npm:
+Install from npm (Node 18+):
 
 ```bash
-npm install -g aegis-desktop     # requires Node 18+
+npm install -g aegis-desktop
 aegis                            # launch
 ```
+
+> Prebuilt binaries are not published from this repository — it carries
+> documentation only, and has no releases. npm is the install path.
 
 Either way, on first launch:
 
@@ -27,7 +28,7 @@ Either way, on first launch:
 3. Pick a model class from the picker at the bottom of the composer.
 
 The published package is [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-on npm; this repo is its source. Two of the three classes bill your AEGIS
+on npm. Its source is held privately; this page documents it. Two of the three classes bill your AEGIS
 account — either the pooled margin, or the BYOK handling fee on top of your own
 provider key; the free **Local** class runs on your own hardware and bills
 nobody.
@@ -279,7 +280,7 @@ The app registers an `aegis://` protocol handler:
 ## Run from source
 
 ```bash
-git clone https://github.com/aegiscloud/aegiscode-desktop.git
+git clone https://www.npmjs.com/package/aegis-desktop.git
 cd aegiscode-desktop
 npm install
 npm start
@@ -330,7 +331,7 @@ host over the same engine.
 
 **Two repos, one product.** This directory is the source of truth. The
 standalone repo at
-[aegiscloud/aegiscode-desktop](https://github.com/aegiscloud/aegiscode-desktop)
+[aegiscloud/aegiscode-desktop](https://www.npmjs.com/package/aegis-desktop)
 is a `git subtree split` of it — same code, published separately so it can be
 cloned and built on its own. Edits land here and are synced out; nothing is
 authored there. The npm package

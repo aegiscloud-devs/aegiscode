@@ -1,55 +1,84 @@
 # Contributing
 
-Thanks for helping improve AEGIS Code.
+Thanks for helping improve AEGIS Code — in this repository, that means the
+**documentation**.
 
-## What this repo is
+## What this repo is (and is not)
 
-This is the **thin client wrapper** for AEGIS: one repo, three surfaces — the
-shared thin client, the Claude Code plugin, and the AEGIS Desktop app. It
-deliberately contains no engine, orchestration, routing, or server-side logic —
-only the surface that connects your tools to the AEGIS service:
+This repository is **documentation and licensing only**:
 
-- `client/aegis.js` — shared zero-dependency transport to `aegiscloud.org`
-  (used by the MCP server, the Electron app, and the `aegis-online` browser SPA)
-- `mcp/server.js` — a zero-dependency MCP server (JSON-RPC over stdio)
-- `commands/*` — Claude Code slash commands
-- `skills/*` — Claude Code skills
-- `desktop/` — AEGIS Desktop, a thin Electron host that runs the same two model
-  classes (`aegis` pooled cloud, `byok` relayed provider key)
-- `install.sh` — the one-line installer
+```
+README.md              product overview + install paths
+cli/README.md          the aegiscode terminal host
+desktop/README.md      AEGIS Desktop (Electron)
+COMMUNITY.md           where to ask, what to expect
+CONTRIBUTING.md        this file
+SECURITY.md            how to report a vulnerability
+LICENSE, LICENSING.md  AGPL-3.0-or-later + commercial option
+```
+
+It does **not** contain source code. The Claude Code plugin, the MCP server, the
+`aegiscode` CLI and AEGIS Desktop are developed in private repositories. There
+is no `package.json` to install, no test suite to run here, and no build step.
+
+That shapes what a contribution can be:
+
+| Welcome | Not actionable here |
+|---|---|
+| Fixing wrong, stale, or dead instructions | Source-code fixes and features |
+| Clarifying a confusing section | Changes to the private repositories |
+| New troubleshooting entries with a real symptom and fix | Speculative restructuring |
+| Screenshots or recordings of a working setup | Marketing campaign assets |
+
+If your goal is a code change, open a
+[Q&A or Ideas discussion](https://github.com/aegiscloud-devs/aegiscode/discussions)
+first — the fix will land in the private repo, and a maintainer can carry it
+over.
 
 ## Ground rules
 
-- **Keep it a thin shell.** Don't move engine/orchestration logic into this
-  repo — it belongs server-side.
-- **Never commit secrets.** Keys are read from the user's environment only.
-- **No new dependencies in `mcp/server.js`.** It must keep running from a bare
-  `node server.js` with zero `npm install`.
+- **Documentation must be true.** Never document a command that has not been
+  run, a URL that has not been fetched, or a feature that has not shipped. An
+  install path that 404s is worse than no install path.
+- **Never commit secrets, keys, or customer data** — not in prose, not in
+  screenshots, not in logs.
+- **Keep the voice.** Direct, concrete, no marketing adjectives. Say what the
+  user types and what they see.
+- **Don't invent version numbers, benchmarks, or dates.**
 
-## Setup
+## Submitting a change
 
-```bash
-git clone https://github.com/aegisinfo/aegiscode-plugin.git
-cd aegiscode-plugin
-# No build step — the server is dependency-free Node.
-node --check mcp/server.js   # syntax check
-bash -n install.sh           # shell syntax check
-```
+1. Open an issue or a discussion describing the problem, unless it is a trivial
+   typo fix.
+2. Fork, branch, and make the smallest change that fixes the actual problem.
+3. Check your links actually resolve, and your commands actually run.
+4. Open a pull request explaining **what was wrong** and **how you verified the
+   fix**. "Updated docs" is not a description.
 
-## Submitting changes
-
-1. Fork the repository and create a feature branch.
-2. Make focused, minimal changes.
-3. Run `node --check mcp/server.js` and `bash -n install.sh`.
-4. Open a pull request describing the change and why it's needed.
+Pull requests are reviewed in batches; there is no guaranteed turnaround. See
+[COMMUNITY.md](COMMUNITY.md) for what to expect from response times.
 
 ## Style
 
-- Shell: POSIX `sh` compatible, `set -eu`.
-- JavaScript: CommonJS, `'use strict'`, 2-space indent, no dependencies.
-- Keep comments explaining *why*, not *what*.
+- One sentence per line where it helps review readability.
+- Wrap at ~80 columns to match the existing files.
+- Code blocks: `bash` for shell, `text` for terminal output.
+- Prefer a table over a bulleted list when the content is genuinely tabular.
+- Links: relative for files in this repo, absolute for anything external.
 
 ## Reporting problems
 
-Bug reports and feature requests are welcome via GitHub issues. For security
-issues, see [SECURITY.md](SECURITY.md) — do not open a public issue.
+- **Bugs and feature requests** → [Discussions](https://github.com/aegiscloud-devs/aegiscode/discussions)
+  (Q&A and Ideas), not issues. Issues are not enabled as a support channel
+  here.
+- **Documentation errors** → a pull request, or a Q&A thread if you would
+  rather just report it.
+- **Security vulnerabilities** → [SECURITY.md](SECURITY.md). Never a public
+  thread.
+
+## Licensing of contributions
+
+By contributing you agree that your contribution is licensed under
+**AGPL-3.0-or-later**, the license this repository carries — see
+[LICENSE](LICENSE). A commercial license that waives the AGPL terms is
+available separately; see [LICENSING.md](LICENSING.md).
