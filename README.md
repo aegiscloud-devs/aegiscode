@@ -1,6 +1,7 @@
 # AEGIS Code
 
 <p align="center">
+  <img src="assets/icon-512.png" alt="AEGIS Code" width="132" height="132">
 </p>
 
 **Pooled multi-provider inference, cross-machine memory, and account tools —

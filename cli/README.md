@@ -1,5 +1,9 @@
 # aegiscode — the terminal host
 
+<p align="center">
+  <img src="../assets/icon-512.png" alt="aegiscode" width="84" height="84">
+</p>
+
 `aegiscode` in your shell — the command-line version of AEGIS Desktop. The same
 tool surface the Claude Code plugin exposes over MCP, plus a terminal instead of
 an editor — built on the same two shared pieces and no others:

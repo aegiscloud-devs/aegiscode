@@ -1,5 +1,9 @@
 # AEGIS Desktop
 
+<p align="center">
+  <img src="../assets/icon-512.png" alt="AEGIS Desktop" width="96" height="96">
+</p>
+
 ![AEGIS Desktop running: the three-class model picker, an agent turn, a gated tool-approval diff, and the unattended work queue](https://raw.githubusercontent.com/aegiscloud-devs/aegiscode/main/desktop/docs/demo.gif)
 
 A standalone Electron chat app over the [AEGIS](https://aegiscloud.org) API,
