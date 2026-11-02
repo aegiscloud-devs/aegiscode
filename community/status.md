@@ -40,3 +40,11 @@ Unanswered new threads (the number to act on):
 - #2 Claude Code plugin: there is no public installer yet — Announcements
 - #1 Welcome — what this community is for — Announcements
 
+
+## 2026-11-02
+
+- New threads: **0**
+- Threads receiving a reply: **0**
+- New threads with no reply after 7 days: **0**
+- Total threads on record: 6
+
