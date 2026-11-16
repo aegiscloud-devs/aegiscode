@@ -15,8 +15,9 @@ others.
 |---|---|---|
 | Get AEGIS tools inside Claude Code | [Claude Code plugin](#claude-code-plugin) | local checkout (no public installer yet) |
 | Get AEGIS tools inside VS Code, Cursor, Zed… | [Editor hosts](#editor-hosts-vs-code-cursor-zed-) | `aegiscode mcp install` |
-| Use a standalone desktop AI app | [AEGIS Desktop](#aegis-desktop-electron) | `npm i -g aegis-desktop` |
-| Work in the terminal | [aegiscode CLI](#aegiscode-cli) | `npm i -g aegiscode` |
+| Use a standalone desktop AI app | [AEGIS Desktop](#aegis-desktop-electron) | `npm i -g aegis-desktop` → `aegis-desktop` |
+| Work in the terminal | [aegiscode CLI](#aegiscode-cli) | `npm i -g aegiscode` → `aegiscode` |
+| One command for both faces | AEGIS ONE dispatcher | `npm i -g aegisone` → `aegis` |
 | Embed the transport in my own software | [Shared thin client](#shared-thin-client) | copy `client/aegis.js` |
 
 Get a free key at **https://aegiscloud.org**.
@@ -110,6 +111,17 @@ npm i -g aegis-desktop
 
 That's the whole install. Two lines. npm fetches the code, puts it in the right
 place, and adds the command to your PATH so you can just type `aegiscode`.
+
+Each package installs its own command: `aegiscode` for the terminal and
+`aegis-desktop` for the window. If you would rather have a single `aegis`
+command that works out which face you meant, install
+[`aegisone`](https://www.npmjs.com/package/aegisone) instead — it carries both
+faces and owns the bare `aegis` bin:
+
+```bash
+npm i -g aegisone
+aegis        # bare, on a desktop → the window; anything scripted → the terminal
+```
 
 #### 🔵 Way 2 — pinning a version (if you need an exact one)
 
@@ -567,7 +579,7 @@ shell commands in a persistent session, and delegate whole sub-tasks to
 subagents. It does **not** require Claude Code.
 
 Published to npm as [`aegis-desktop`](https://www.npmjs.com/package/aegis-desktop)
-(`npm i -g aegis-desktop && aegis`). Its source is held privately. This
+(`npm i -g aegis-desktop && aegis-desktop`). Its source is held privately. This
 section is the canonical install/architecture reference — there is no public
 source repository to clone and build.
 
@@ -645,8 +657,12 @@ preamble with a padded horizon (in memory only, claimed once). Full detail:
 
 ```bash
 npm install -g aegis-desktop
-aegis
+aegis-desktop
 ```
+
+Bare `aegis` belongs to [`aegisone`](https://www.npmjs.com/package/aegisone),
+the product that dispatches between the window and the terminal. The two
+packages install side by side, each under its own command.
 
 ### Run from source
 

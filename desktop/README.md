@@ -17,11 +17,16 @@ Install from npm (Node 18+):
 
 ```bash
 npm install -g aegis-desktop
-aegis                            # launch
+aegis-desktop                    # launch
 ```
 
 > Prebuilt binaries are not published from this repository — it carries
 > documentation only, and has no releases. npm is the install path.
+
+Bare `aegis` belongs to [`aegisone`](https://www.npmjs.com/package/aegisone), the
+product that installs both faces and dispatches between them. The two packages
+install side by side, each under its own command — install `aegis-desktop` for
+the window alone, or `aegisone` if you want one command for both.
 
 Either way, on first launch:
 

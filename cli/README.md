@@ -64,7 +64,7 @@ product, so they are one name now:
 | `aegis-terminal` | deprecated — the 0.1.x spelling of this package, folded into `aegiscode`. |
 | `aegiscode-cli` | 4.0.3, an earlier name of the full coding-assistant CLI (originally published under the now-retired `aegisinfo` account). Untouched. |
 | `aegis-cli` | 0.4.8 (unrelated). |
-| `aegis` (bin) | claimed **twice already** — by `aegiscode-cli` (→ `bin/cli.js`) and by `aegis-desktop` (→ `bin/aegis.js`). Pre-existing; whichever installs last wins. |
+| `aegis` (bin) | was claimed twice — by `aegiscode-cli` (→ `bin/cli.js`) and by `aegis-desktop` (→ `bin/aegis.js`), so whichever installed last won and installing both failed with `EEXIST`. **Resolved:** `aegis-desktop`'s bin is now `aegis-desktop`, and `aegis` belongs to `aegisone` alone. |
 
 Publishing this host as `aegiscode` moves the `latest` dist-tag for that name
 onto it. The previous line (`aegiscode@5.x`, the older coding-assistant agent,
