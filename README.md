@@ -87,12 +87,16 @@ Open a terminal (the black window where you type commands) and type:
 node -v
 ```
 
-**If you see something like `v20.11.0`** — great, you already have it. Skip to
+**If you see something like `v22.11.0`** — great, you already have it. Skip to
 Step 2.
 
-**If you see "command not found" or a number below 18** — go to
+**If you see "command not found" or a number below 22** — go to
 **https://nodejs.org**, download the big green **LTS** button, install it, then
 close and reopen your terminal and run `node -v` again.
+
+The version matters: **22 or newer**. An older Node will install without
+complaining and then fail at the first thing you ask it to do, so it is worth
+checking the number here rather than debugging it later.
 
 ### Step 2 — Install it. Pick ONE way.
 
@@ -129,7 +133,7 @@ aegis        # bare, on a desktop → the window; anything scripted → the term
 lab machine, or because a new release broke something — install it explicitly:
 
 ```bash
-npm install -g aegiscode@7.0.16
+npm install -g aegiscode@7.0.43
 npm view aegiscode versions --json    # every published version
 ```
 
@@ -211,7 +215,7 @@ Find your symptom in the left column. The fix is on the right.
 | `401`, `403`, or `invalid key` | The key is wrong, expired, or has a typo | run `aegiscode login` again and paste it carefully |
 | `No AEGIS_API_KEY` | The program can't find your key | redo Step 3, then reopen the terminal |
 | It worked before, not now | Your terminal is still using the old settings | close and reopen it |
-| `EACCES` when running `npm i -g` | npm wants permission it doesn't have | don't use `sudo` — use **Way 2 (git)** instead, it needs no permissions |
+| `EACCES` when running `npm i -g` | npm wants permission it doesn't have | **don't use `sudo`** — point npm at a folder you own instead: `npm config set prefix ~/.npm-global`, then add `export PATH="$HOME/.npm-global/bin:$PATH"` to your shell file, reopen the terminal, and run the install again |
 | Claude Code doesn't know `/aegis-status` | The plugin was installed but Claude Code wasn't restarted | fully quit and reopen Claude Code |
 
 Still stuck? Open an issue at
@@ -261,7 +265,7 @@ Policy tests: `node --test test/noncompliance-policy.test.mjs`.
 
 ## Claude Code plugin
 
-**Requirements:** Node.js 18+ and the `claude` CLI, plus a local plugin checkout.
+**Requirements:** Node.js 22+ and the `claude` CLI, plus a local plugin checkout.
 
 > **There is no public install command yet.** The Claude Code plugin's source,
 > `install.sh` and marketplace file are held in a private repository; this repo
@@ -718,7 +722,7 @@ const aegis = require('./client/aegis.js');   // Node
 |---|---|
 | `aegis` tools error with "no API key" | The MCP server resolves the key from `$AEGIS_API_KEY` and then `~/.aegiscode/credentials.json`. Set one (`aegiscode login`, or an export) and **restart Claude Code** — setting it while Claude Code is running has no effect. |
 | `AEGIS_API_KEY` is set but tools still fail | Placeholders are rejected by the installer. Confirm the real key is exported in *this* shell: `echo $AEGIS_API_KEY`. |
-| Installer exits with a Node version error | Node 18+ is required (the MCP server uses global `fetch`). Check with `node -v`. |
+| Installer exits with a Node version error | Node 22+ is required (the MCP server uses global `fetch`). Check with `node -v`. |
 | Installer exits with "Claude Code CLI not found" | Install Claude Code first: https://claude.com/claude-code. Only the plugin surface needs it — the desktop app does not. |
 | `/aegis-status` shows no memory | Cloud memory needs a plan with memory enabled; free accounts are capped at 3 memory sessions. |
 | Saved a memory on one machine, can't find it on another | Confirm both machines use the same AEGIS key, then run `/aegis-status` to force a sync. |

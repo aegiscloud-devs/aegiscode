@@ -13,7 +13,7 @@ delegate whole sub-tasks to subagents. It does **not** require Claude Code.
 
 ## Install
 
-Install from npm (Node 18+):
+Install from npm (Node 22+):
 
 ```bash
 npm install -g aegis-desktop

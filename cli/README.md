@@ -1,32 +1,43 @@
-# aegiscode — the terminal host
+# aegiscode — the assistant in your terminal
 
 <p align="center">
   <img src="../assets/icon-512.png" alt="aegiscode" width="84" height="84">
 </p>
 
-`aegiscode` in your shell — the command-line version of AEGIS Desktop. The same
-tool surface the Claude Code plugin exposes over MCP, plus a terminal instead of
-an editor — built on the same two shared pieces and no others:
+`aegiscode` is the command-line version of AEGIS One. You type what you want in
+plain English — *"why does the build fail?"*, *"rename this function
+throughout"*, *"summarise what changed this week"* — and it reads your files,
+runs commands, edits code and answers. It is the same assistant, in a terminal
+window instead of a window with buttons.
 
-| Shared piece | What it is |
-|---|---|
-| `client/aegis.js` | The thin transport. Holds the API key, speaks HTTP/SSE. No brain logic. |
-| `mcp/tools.js` | The tool registry — names, JSON schemas, result formatting. |
-| `desktop/renderer/usage.js` | The token-usage → number mapping, shared with the GUI so the two can never disagree. |
-| `desktop/lib/local/` | The agent-loop engine — persistent-shell exec, read/write/edit/glob/grep, Task subagents. The CLI runs the same loop the GUI does, scoped to the AEGIS class. |
+There is nothing to configure before you start and no project to set up.
 
-Routing, model tiers, memory and billing all stay behind aegiscloud.org.
+**You need two things:**
+
+1. **[Node.js 22 or newer](https://nodejs.org/en/download)** — the runtime that
+   runs the app. On macOS or Windows the installer is a double-click; on Linux
+   use your package manager. Check yours with `node -v`.
+2. **A free AEGIS key** from <https://aegiscloud.org> — this is what lets it
+   think. You paste it once, in step 2 below.
+
+If you have never used a terminal before: it is the plain window where you type
+commands and press Enter. On macOS it is called **Terminal**; on Windows,
+**PowerShell**. Open it and type the grey boxes below exactly as written.
 
 ## Quick start
 
 Four steps, in order. Everything past this section is the fuller reference for
 each one.
 
-**1. Install** — requires Node 18+.
+**1. Install** — needs Node 22+ (see above if you are not sure).
 
 ```bash
 npm install -g aegiscode
 ```
+
+`npm` comes with Node.js. `-g` means *"install this so I can run it from any
+folder"*. This one line downloads the app and puts the `aegiscode` command on
+your machine.
 
 **2. Log in** — get a key at <https://aegiscloud.org> if you don't have one.
 
@@ -77,7 +88,7 @@ installable and immutable on the registry — pin `aegiscode@5` for it.
 npm install -g aegiscode     # the only install path; source is private
 ```
 
-Requires Node 18+. Save your key once — it goes to `~/.aegiscode/credentials.json`
+Requires Node 22+. Save your key once — it goes to `~/.aegiscode/credentials.json`
 (mode `0600`) and is then picked up by every later launch, script and shell:
 
 ```bash
@@ -219,18 +230,25 @@ launch, and an explicit flag (`-m`, `--light`) always outranks the stored value.
 
 In a session, plain text is a prompt. `/help` lists commands, grouped by
 category, the way the reference does. The registry is that client's, ported
-command for command — 75 entries across nine categories:
+command for command — 96 entries across eight categories:
 
 | Category | Commands |
 |---|---|
-| Session & context | `/clear` `/compact` `/cost` `/exit` `/new` `/recap` `/resume` `/rewind` `/agents` `/status` `/teleport` `/version` `/clone` `/schedule` |
-| Workspace | `/run` `/build` `/cd` `/copy` `/init` `/review` `/prs` |
-| Model & behavior | `/model` `/models` `/class` `/effort` `/thinking` `/theme` `/vim` `/router` `/confirm` `/yolo` `/permissions` `/hooks` `/skills` `/mcp` |
-| Data | `/context` `/export` `/tokens` `/sync` |
-| Auth | `/key` `/login` `/logout` `/credentials` `/byok` `/byok-set` `/byok-rm` `/byok-key` `/byok-rm-key` |
-| Support | `/help` `/doctor` `/troubleshooting` `/feedback` `/bug` `/issue` `/onboarding` `/benchmark` `/release-notes` `/billing` `/cloud` |
-| Aegis plugin | `/aegis-ask` `/aegis-status` `/aegis-recall` `/aegis-remember` `/memory` `/aegis-council` `/aegis-multi` `/aegis-print` `/aegis-import` `/tool` |
+| Session & context | `/schedule` `/clear` `/undo` `/compact` `/context` `/todos` `/config` `/exit` `/recap` `/resume` `/rewind` `/agents` `/status` `/teleport` `/version` `/new` `/skills` `/multiyolo` `/multi` `/research` `/debate` |
+| Workspace | `/run` `/build` `/cd` `/sandbox` `/init` `/clone` |
+| Model & behavior | `/ping` `/effort` `/model` `/theme` `/terminal` `/vim` `/permissions` `/hooks` `/credentials` `/install-github-app` `/thinking` `/mcp` `/memory` `/memory-deep` `/confirm` `/automode` *(alias `/yolo`)* `/router` `/class` `/models` `/model-add` `/model-discover` `/model-rm` |
+| Data | `/copy` `/cost` `/export` `/tokens` `/sync` `/drive` |
+| Auth | `/login` `/logout` `/key` `/byok` `/byok-set` `/byok-rm` `/byok-list` `/byok-key` `/byok-rm-key` |
+| Support | `/help` `/license` `/credits` `/doctor` `/upgrade` `/troubleshooting` `/feedback` `/bug` `/issue` `/onboarding` `/shell-completion` `/terminal-setup` `/pr-comments` `/prs` `/review` `/benchmark` `/billing` `/topup` `/cloud` `/gmail` `/release-notes` |
 | Fun | `/radio` `/waifu` |
+| Aegis plugin | `/aegis-status` `/aegis-ask` `/aegis-recall` `/aegis-remember` `/aegis-council` `/aegis-print` `/aegis-multi` `/tool` `/aegis-import` |
+
+There are 96 commands in eight categories; the ninth category in the registry,
+`Custom`, holds none by default. `/yolo` is an **alias** of `/automode`, not a
+command of its own — it never appears as its own row.
+
+This table is generated from `cli/src/commands.js` (`COMMANDS` + `CATEGORIES`) in
+the plugin repository, which is the only authority on what exists.
 
 `/help` shows the live list with hints; aliases are searchable in the `/`
 palette exactly as they are there (`/ask` → `/aegis-ask`, `?` → `/help`,
@@ -382,7 +400,7 @@ Copy-paste, in the order you actually need them.
 ### Install and sign in
 
 ```bash
-npm install -g aegiscode           # requires Node 18+
+npm install -g aegiscode           # requires Node 22+
 aegiscode login                    # prompts for your AEGIS key, no echo
 aegiscode key status               # verify: masked key + which source is in use
 aegiscode                          # start a session
@@ -528,7 +546,7 @@ alternate-screen frame of header rule, transcript viewport, spinner/effort line,
 input line and status line, driven by a raw key stream.
 
 ```
-╭───────────────────────────── AEGIS Code v6.3.0 ─────────────────────────────╮
+╭────────────────────────── AEGIS Code v<version> ────────────────────────────╮
 ❯ summarise what changed in the token accounting
 ● Three things changed, and one of them was costing you money:
 
